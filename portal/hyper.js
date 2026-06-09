@@ -422,7 +422,7 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.9.2";
+let latestAgentVersion = "0.9.3";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
@@ -793,7 +793,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7fa50629e99753af0b2ccc41fc173577e2ad469a/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/b694b637f2669549798c23e6ac8b53446b11d0e0/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1032,13 +1032,15 @@ function agentUpdateAvailable(host) {
 }
 
 function manualAgentUpdateCommand() {
+  const account = getStoredAccount() || {};
+  const workspaceCode = String(account.workspace_code || "your_workspace_code").replace(/"/g, '\\"');
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7fa50629e99753af0b2ccc41fc173577e2ad469a/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/b694b637f2669549798c23e6ac8b53446b11d0e0/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
-    'Install-VisorCoreAgentTask -InstallRoot (Join-Path $env:ProgramData "VisorCore\\Agent")',
+    `Register-VisorCoreHost -Workspace "${workspaceCode}" -Region "us-central" -RequireMfa`,
   ].join("\n");
 }
 
