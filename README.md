@@ -3,16 +3,12 @@
 Public static assets for VisorCore websites and the VisorCore Hyper Portal.
 
 This repository is intentionally limited to public browser assets:
-
 - Logos and public images
 - Shared CSS and JavaScript
 - Marketing-site CSS and JavaScript
 - Hyper Portal frontend CSS and JavaScript
 
-Do not store server-side PHP, configuration, Microsoft Graph secrets, Cloudflare Turnstile secrets, account storage, tickets, invoices, host requests, licensing logic, payment settings, or private/admin data in this repository.
-
 ## CDN
-
 Assets can be served through jsDelivr:
 
 ```text
