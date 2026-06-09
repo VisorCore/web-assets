@@ -788,7 +788,8 @@ function renderAccountUi(account) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
       '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/main/install.ps1" -UseBasicParsing).Content',
-      'if ($installer -match "<html|Bot Verification|grecaptcha") { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
+      '$trimmed = $installer.TrimStart()',
+      'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
       `Register-VisorCoreHost -Workspace "${workspaceCode}" -Region "us-central" -RequireMfa`,
     ].join("\n");
@@ -1028,7 +1029,8 @@ function manualAgentUpdateCommand() {
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
     '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/main/install.ps1" -UseBasicParsing).Content',
-    'if ($installer -match "<html|Bot Verification|grecaptcha") { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
+    '$trimmed = $installer.TrimStart()',
+    'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
     'Install-VisorCoreAgentTask -InstallRoot (Join-Path $env:ProgramData "VisorCore\\Agent")',
   ].join("\n");
