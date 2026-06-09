@@ -256,6 +256,22 @@ document.querySelectorAll("[data-password-field]").forEach((input) => {
 async function submitAuthForm(form, endpoint) {
   const status = form.querySelector("[data-auth-status]");
   const submit = form.querySelector('button[type="submit"]');
+  const isLogin = endpoint.includes("login");
+  const mfaField = form.querySelector("[data-login-mfa-field]");
+  const mfaInput = form.querySelector('[name="mfa"]');
+  const mfaVisible = isLogin && mfaField && !mfaField.hasAttribute("hidden");
+  if (mfaVisible && mfaInput) {
+    const digits = mfaInput.value.replace(/\D/g, "").slice(0, 6);
+    mfaInput.value = digits;
+    if (digits.length !== 6) {
+      if (status) {
+        status.textContent = "Enter the 6-digit MFA code from your authenticator app.";
+        status.className = "form-status bad";
+      }
+      mfaInput.focus();
+      return;
+    }
+  }
   if (endpoint.includes("signup")) {
     const password = form.querySelector("[data-password-field]");
     if (password && !updatePasswordRules(password)) {
@@ -288,14 +304,20 @@ async function submitAuthForm(form, endpoint) {
     const data = await response.json();
     if (!data.success) {
       if (data.mfa_required) {
-        form.querySelector("[data-login-mfa-field]")?.removeAttribute("hidden");
-        form.querySelector('[name="mfa"]')?.focus();
+        mfaField?.removeAttribute("hidden");
+        if (submit) submit.textContent = "Verify MFA & Sign In";
+        mfaInput?.focus();
       }
       if (status) {
         status.textContent = data.message || "The request could not be completed.";
         status.classList.add("bad");
       }
       return;
+    }
+    if (isLogin) {
+      mfaField?.setAttribute("hidden", "");
+      if (mfaInput) mfaInput.value = "";
+      if (submit) submit.textContent = "Sign In";
     }
     if (data.account) {
       storeAccount(data.account, data.mode || "view_only");
