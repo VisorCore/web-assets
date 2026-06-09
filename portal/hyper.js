@@ -524,7 +524,7 @@ async function requestVmConsoleSession(vm) {
     body.set("host_id", vm.host_id || "");
     body.set("vm_name", vm.name || "");
     body.set("vm_id", vm.id || "");
-    const response = await fetch("/api/console/session", {
+    const response = await fetch("/api/console-session", {
       method: "POST",
       body,
       credentials: "same-origin",
