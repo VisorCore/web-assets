@@ -422,6 +422,11 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
+let latestAgentVersion = "0.8.0";
+let latestTickets = [];
+let selectedTicketId = "";
+let latestStaffTickets = [];
+let selectedStaffTicketId = "";
 
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
@@ -459,6 +464,7 @@ function activatePortalView(shell, view) {
   });
   if (view === "billing" && consoleEl && !billingInvoicesLoading) loadBillingInvoices();
   if (view === "users" && consoleEl) loadSubUsers();
+  if (view === "support" && consoleEl) loadSupportTickets();
   if (view === "hosts" && consoleEl && !hostRequestsLoading) loadHostRequests();
 }
 
@@ -887,6 +893,35 @@ function formatSeconds(value) {
   return `${minutes}m`;
 }
 
+function compareVersions(a, b) {
+  const left = String(a || "0").split(".").map((part) => Number(part) || 0);
+  const right = String(b || "0").split(".").map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function agentVersionForHost(host) {
+  return host.agent_version || host.inventory?.agent_version || "";
+}
+
+function agentUpdateAvailable(host) {
+  return Boolean(host.agent_update_available) || compareVersions(agentVersionForHost(host), host.latest_agent_version || latestAgentVersion) < 0;
+}
+
+function manualAgentUpdateCommand() {
+  return [
+    "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/main/install.ps1" -UseBasicParsing).Content',
+    'if ($installer -match "<html|Bot Verification|grecaptcha") { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
+    "iex $installer",
+    'Install-VisorCoreAgentTask -InstallRoot (Join-Path $env:ProgramData "VisorCore\\Agent")',
+  ].join("\n");
+}
+
 function clampPercent(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number)) return 0;
@@ -1057,6 +1092,18 @@ function commandButtonsForDisk(disk) {
   </div>`;
 }
 
+function hostAgentActionButtons(host) {
+  const id = escapeHtml(host.id || "");
+  const name = escapeHtml(host.computer_name || host.inventory?.host?.name || "Hyper-V Host");
+  const installed = agentVersionForHost(host) || "Unknown";
+  const latest = host.latest_agent_version || latestAgentVersion;
+  const needsUpdate = agentUpdateAvailable(host);
+  return `<div class="row-actions host-agent-actions">
+    <span class="agent-version-chip ${needsUpdate ? "warn" : "good"}">Installed ${escapeHtml(installed)} / Latest ${escapeHtml(latest)}</span>
+    ${needsUpdate ? `<button type="button" data-command-intent="primary" data-queue-command="agent.update" data-target-type="host" data-host-id="${id}" data-target-name="${name}" data-agent-update-button>Update Agent</button>` : `<span class="agent-version-chip good">Up to date</span>`}
+  </div>`;
+}
+
 function renderOverviewInventory(hosts) {
   const approved = approvedInventoryHosts(hosts);
   const pending = hosts.filter((host) => (host.status || "pending_approval") === "pending_approval").length;
@@ -1104,11 +1151,14 @@ function renderInventoryViews(hosts) {
     const inventory = host.inventory || {};
     const hostInfo = inventory.host || {};
     const online = String(host.agent_status || "").toLowerCase() === "online";
+    const installed = agentVersionForHost(host) || "Unknown";
+    const needsUpdate = agentUpdateAvailable(host);
     return [
       escapeHtml(host.computer_name || hostInfo.name || "Hyper-V Host"),
       escapeHtml(hostInfo.os || "Windows Hyper-V"),
-      escapeHtml(inventory.agent_version || "0.2.0"),
+      needsUpdate ? `${escapeHtml(installed)} ${pill("Update Available", "warn")}` : `${escapeHtml(installed)} ${pill("Current", "good")}`,
       online ? pill("Online", "good") : pill(host.agent_status || "Waiting", "warn"),
+      hostAgentActionButtons(host),
     ];
   }));
   const hostsEmpty = document.querySelector('[data-view-panel="hosts"] > .portal-card > [data-empty-state]');
@@ -1205,8 +1255,143 @@ function renderRecentCommandStatus(commands = []) {
   setCommandStatus(state === "succeeded" ? "good" : (state === "failed" ? "bad" : "active"), title, `${latest.label || latest.action || "Command"}${target}: ${latest.message || state}`);
 }
 
+function renderTicketList(tickets) {
+  const list = document.querySelector("[data-ticket-list]");
+  if (!list) return;
+  latestTickets = Array.isArray(tickets) ? tickets : [];
+  if (!selectedTicketId && latestTickets.length) selectedTicketId = latestTickets[0].id || "";
+  list.innerHTML = latestTickets.length ? latestTickets.map((ticket) => `
+    <button type="button" class="ticket-list-item ${ticket.id === selectedTicketId ? "active" : ""}" data-ticket-select="${escapeHtml(ticket.id || "")}">
+      <strong>${escapeHtml(ticket.subject || "Support ticket")}</strong>
+      <span>${escapeHtml(ticket.department || "Support")} - ${escapeHtml(ticket.priority || "Normal")} - ${escapeHtml(ticket.status || "Open")}</span>
+      <small>${escapeHtml(ticket.updated_at ? new Date(ticket.updated_at).toLocaleString() : "")}</small>
+    </button>
+  `).join("") : '<div class="admin-empty small"><strong>No support tickets yet.</strong><p>Create a ticket and the thread will appear here.</p></div>';
+  renderTicketThread(latestTickets.find((ticket) => ticket.id === selectedTicketId));
+}
+
+function renderTicketThread(ticket) {
+  const thread = document.querySelector("[data-ticket-thread]");
+  if (!thread) return;
+  if (!ticket) {
+    thread.innerHTML = '<div class="admin-empty"><strong>No ticket selected.</strong><p>Select a ticket to view the discussion thread.</p></div>';
+    return;
+  }
+  const messages = Array.isArray(ticket.messages) ? ticket.messages : [];
+  thread.innerHTML = `
+    <div class="ticket-thread-header">
+      <div><strong>${escapeHtml(ticket.subject || "Support ticket")}</strong><span>${escapeHtml(ticket.id || "")} - ${escapeHtml(ticket.category || "General")}</span></div>
+      ${pill(ticket.status || "Open", String(ticket.status || "").toLowerCase().includes("answered") ? "good" : "warn")}
+    </div>
+    <div class="ticket-messages">
+      ${messages.map((message) => `<article class="ticket-message ${message.author_type === "staff" ? "staff" : ""}">
+        <strong>${escapeHtml(message.author_name || message.author_email || "VisorCore")}</strong>
+        <small>${escapeHtml(message.created_at ? new Date(message.created_at).toLocaleString() : "")}</small>
+        <div>${message.body_html || ""}</div>
+      </article>`).join("")}
+    </div>
+    <form class="ticket-reply-form" data-ticket-reply-form data-ticket-id="${escapeHtml(ticket.id || "")}">
+      <div class="rich-editor" data-rich-editor>
+        <div class="rich-toolbar">
+          <button type="button" data-rich-command="bold">Bold</button>
+          <button type="button" data-rich-command="italic">Italic</button>
+          <button type="button" data-rich-command="underline">Underline</button>
+          <button type="button" data-rich-command="strikeThrough">Strike</button>
+          <button type="button" data-rich-command="hiliteColor" data-rich-value="#fff2a8">Highlight</button>
+          <button type="button" data-rich-link>Link</button>
+          <button type="button" data-rich-image>Image URL</button>
+          <label class="rich-upload">Upload Image<input type="file" accept="image/*" data-rich-upload hidden></label>
+        </div>
+        <div class="rich-content" contenteditable="true" data-rich-content></div>
+        <input type="hidden" name="message_html" data-rich-output>
+      </div>
+      <button class="btn btn-primary btn-small" type="submit">Reply</button>
+      <p class="form-status" data-ticket-reply-status></p>
+    </form>
+  `;
+}
+
+function renderStaffTicketList(tickets, signatureHtml = "") {
+  const list = document.querySelector("[data-staff-ticket-list]");
+  const signature = document.querySelector("[data-staff-signature-content]");
+  if (signature && signatureHtml && signature.innerHTML.trim() === "") signature.innerHTML = signatureHtml;
+  if (!list) return;
+  latestStaffTickets = Array.isArray(tickets) ? tickets : [];
+  if (!selectedStaffTicketId && latestStaffTickets.length) selectedStaffTicketId = latestStaffTickets[0].id || "";
+  list.innerHTML = latestStaffTickets.length ? latestStaffTickets.map((ticket) => `
+    <button type="button" class="ticket-list-item ${ticket.id === selectedStaffTicketId ? "active" : ""}" data-staff-ticket-select="${escapeHtml(ticket.id || "")}">
+      <strong>${escapeHtml(ticket.subject || "Support ticket")}</strong>
+      <span>${escapeHtml(ticket.department || "Support")} - ${escapeHtml(ticket.priority || "Normal")} - ${escapeHtml(ticket.status || "Open")}</span>
+      <small>${escapeHtml(ticket.client_email || "")}</small>
+    </button>
+  `).join("") : '<div class="admin-empty small"><strong>No tickets yet.</strong><p>Website contact submissions and client tickets will appear here.</p></div>';
+  renderStaffTicketThread(latestStaffTickets.find((ticket) => ticket.id === selectedStaffTicketId));
+}
+
+function renderStaffTicketThread(ticket) {
+  const thread = document.querySelector("[data-staff-ticket-thread]");
+  if (!thread) return;
+  if (!ticket) {
+    thread.innerHTML = '<div class="admin-empty"><strong>No ticket selected.</strong><p>Select a ticket to view the discussion thread.</p></div>';
+    return;
+  }
+  const messages = Array.isArray(ticket.messages) ? ticket.messages : [];
+  thread.innerHTML = `
+    <div class="ticket-thread-header">
+      <div><strong>${escapeHtml(ticket.subject || "Support ticket")}</strong><span>${escapeHtml(ticket.id || "")} - ${escapeHtml(ticket.client_email || "")}</span></div>
+      ${pill(ticket.status || "Open", String(ticket.status || "").toLowerCase().includes("answered") ? "good" : "warn")}
+    </div>
+    <div class="ticket-messages">
+      ${messages.map((message) => `<article class="ticket-message ${message.author_type === "staff" ? "staff" : ""}">
+        <strong>${escapeHtml(message.author_name || message.author_email || "VisorCore")}</strong>
+        <small>${escapeHtml(message.created_at ? new Date(message.created_at).toLocaleString() : "")}</small>
+        <div>${message.body_html || ""}</div>
+      </article>`).join("")}
+    </div>
+    <form class="ticket-reply-form" data-staff-ticket-reply-form data-ticket-id="${escapeHtml(ticket.id || "")}">
+      <label>Status
+        <select name="status">
+          <option>Answered</option>
+          <option>Open</option>
+          <option>Waiting Client</option>
+          <option>Escalated</option>
+          <option>Resolved</option>
+        </select>
+      </label>
+      <div class="rich-editor" data-rich-editor>
+        <div class="rich-toolbar">
+          <button type="button" data-rich-command="bold">Bold</button>
+          <button type="button" data-rich-command="italic">Italic</button>
+          <button type="button" data-rich-command="underline">Underline</button>
+          <button type="button" data-rich-command="strikeThrough">Strike</button>
+          <button type="button" data-rich-command="hiliteColor" data-rich-value="#fff2a8">Highlight</button>
+          <button type="button" data-rich-link>Link</button>
+          <button type="button" data-rich-image>Image URL</button>
+        </div>
+        <div class="rich-content" contenteditable="true" data-rich-content></div>
+        <input type="hidden" name="message_html" data-rich-output>
+      </div>
+      <button class="btn btn-primary btn-small" type="submit">Reply as Staff</button>
+      <p class="form-status" data-staff-ticket-reply-status></p>
+    </form>
+  `;
+}
+
+async function loadSupportTickets() {
+  if (!getStoredAccount()) return;
+  try {
+    const response = await fetch("/api/support/tickets", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await response.json();
+    if (data.success) renderTicketList(data.tickets || []);
+  } catch {}
+}
+
 function renderHostRequests(data) {
   const hosts = Array.isArray(data.hosts) ? data.hosts : [];
+  latestAgentVersion = data.latest_agent_version || latestAgentVersion;
   const list = document.querySelector("[data-host-requests-list]");
   const empty = document.querySelector("[data-host-requests-empty]");
   const count = document.querySelector("[data-host-request-count]");
@@ -1218,6 +1403,7 @@ function renderHostRequests(data) {
   const pending = hosts.filter((host) => (host.status || "pending_approval") === "pending_approval");
   const approved = hosts.filter((host) => (host.status || "") === "approved");
   const removing = hosts.filter((host) => ["deletion_requested", "delete_command_sent"].includes(host.status || ""));
+  const updateHosts = approved.filter((host) => agentUpdateAvailable(host));
   connectedHostsCount = approved.length;
   if (count) {
     count.textContent = `${pending.length} pending`;
@@ -1247,6 +1433,16 @@ function renderHostRequests(data) {
     connectedCount.textContent = `${approved.length} connected`;
     connectedCount.className = approved.length ? "pill good" : "pill";
   }
+  const updateBanner = document.querySelector("[data-agent-update-banner]");
+  const updateBannerText = document.querySelector("[data-agent-update-banner-text]");
+  if (updateBanner) updateBanner.hidden = updateHosts.length === 0;
+  if (updateBannerText && updateHosts.length) {
+    updateBannerText.textContent = `${updateHosts.length} host${updateHosts.length === 1 ? "" : "s"} can update to Hyper Agent ${latestAgentVersion}.`;
+  }
+  const manualPanel = document.querySelector("[data-manual-agent-update]");
+  const manualCommand = document.querySelector("[data-manual-agent-update-command]");
+  if (manualCommand) manualCommand.textContent = manualAgentUpdateCommand();
+  if (manualPanel && updateHosts.length === 0) manualPanel.hidden = true;
   if (connectedList) {
     connectedList.innerHTML = "";
     approved.concat(removing).forEach((host) => {
@@ -1254,6 +1450,8 @@ function renderHostRequests(data) {
       const online = String(host.agent_status || "").toLowerCase() === "online";
       const deleting = ["deletion_requested", "delete_command_sent"].includes(host.status || "");
       const inventory = host.inventory || {};
+      const installed = agentVersionForHost(host) || "Unknown";
+      const needsUpdate = agentUpdateAvailable(host);
       const vmCount = Number(inventory.vm_count || 0);
       const switchCount = Number(inventory.switch_count || 0);
       connectedList.insertAdjacentHTML("beforeend", `
@@ -1261,11 +1459,13 @@ function renderHostRequests(data) {
           <div>
             <strong>${escapeHtml(host.computer_name || "Unnamed Hyper-V Host")}</strong>
             <span>${escapeHtml(host.region || "us-central")} - ${deleting ? "Removal requested" : (online ? "Agent online" : "Agent approved, waiting for check-in")}</span>
-            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task syncs inventory every 10 seconds and listens for commands every 1 second after approval.")}</small>
+            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Agent ${escapeHtml(installed)} - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task syncs inventory every 10 seconds and listens for commands every 1 second after approval.")}</small>
           </div>
           <div class="connected-host-meta">
             ${deleting ? pill("Removal Requested", "warn") : (online ? pill("Online", "good") : hostStatusPill("approved"))}
             ${deleting ? pill("Awaiting Agent", "warn") : (online ? pill(`${vmCount} VMs`, vmCount > 0 ? "good" : "warn") : pill("Inventory Pending", "warn"))}
+            ${needsUpdate ? pill(`Agent ${latestAgentVersion} Available`, "warn") : pill("Agent Current", "good")}
+            ${needsUpdate && online ? `<button type="button" data-command-intent="primary" data-queue-command="agent.update" data-target-type="host" data-host-id="${id}" data-target-name="${escapeHtml(host.computer_name || "Hyper-V Host")}" data-agent-update-button>Update Agent</button>` : ""}
             <button type="button" class="host-delete-button" data-host-action="${deleting ? "hard_delete" : "delete"}" data-host-id="${id}">${deleting ? "Hard Delete" : "Soft Delete"}</button>
           </div>
         </div>
@@ -1419,6 +1619,136 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("click", (event) => {
+  const command = event.target.closest("[data-rich-command]");
+  if (command) {
+    event.preventDefault();
+    document.execCommand(command.dataset.richCommand, false, command.dataset.richValue || null);
+    return;
+  }
+  const link = event.target.closest("[data-rich-link]");
+  if (link) {
+    event.preventDefault();
+    const url = window.prompt("Link URL", "https://");
+    if (url) document.execCommand("createLink", false, url);
+    return;
+  }
+  const image = event.target.closest("[data-rich-image]");
+  if (image) {
+    event.preventDefault();
+    const url = window.prompt("Image URL", "https://");
+    if (url) document.execCommand("insertImage", false, url);
+    return;
+  }
+  const ticketSelect = event.target.closest("[data-ticket-select]");
+  if (ticketSelect) {
+    selectedTicketId = ticketSelect.dataset.ticketSelect || "";
+    renderTicketList(latestTickets);
+    return;
+  }
+  const staffTicketSelect = event.target.closest("[data-staff-ticket-select]");
+  if (staffTicketSelect) {
+    selectedStaffTicketId = staffTicketSelect.dataset.staffTicketSelect || "";
+    renderStaffTicketList(latestStaffTickets);
+  }
+});
+
+document.addEventListener("change", (event) => {
+  const upload = event.target.closest("[data-rich-upload]");
+  if (!upload || !upload.files?.[0]) return;
+  const file = upload.files[0];
+  if (!file.type.startsWith("image/") || file.size > 2 * 1024 * 1024) {
+    window.alert("Upload an image under 2 MB.");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => document.execCommand("insertImage", false, reader.result);
+  reader.readAsDataURL(file);
+});
+
+function syncRichEditor(form) {
+  const editor = form.querySelector("[data-rich-content]");
+  const output = form.querySelector("[data-rich-output]");
+  if (editor && output) output.value = editor.innerHTML;
+  return output?.value || "";
+}
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-ticket-form], [data-ticket-reply-form]");
+  if (!form) return;
+  event.preventDefault();
+  const status = form.querySelector("[data-ticket-status], [data-ticket-reply-status]");
+  const bodyHtml = syncRichEditor(form);
+  if (!bodyHtml || !bodyHtml.replace(/<[^>]+>/g, "").trim()) {
+    if (status) {
+      status.textContent = "Message text is required.";
+      status.className = "form-status bad";
+    }
+    return;
+  }
+  const payload = new FormData(form);
+  if (form.matches("[data-ticket-reply-form]")) {
+    payload.set("action", "reply");
+    payload.set("ticket_id", form.dataset.ticketId || "");
+  }
+  try {
+    const response = await fetch("/api/support/tickets", {
+      method: "POST",
+      body: payload,
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await response.json();
+    if (status) {
+      status.textContent = data.success ? "Ticket saved." : (data.message || "Ticket could not be saved.");
+      status.className = data.success ? "form-status ok" : "form-status bad";
+    }
+    if (data.success) {
+      form.reset();
+      form.querySelector("[data-rich-content]").innerHTML = "";
+      renderTicketList(data.tickets || []);
+    }
+  } catch {
+    if (status) {
+      status.textContent = "Ticket could not be saved from this browser session.";
+      status.className = "form-status bad";
+    }
+  }
+});
+
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest("[data-staff-ticket-reply-form], [data-staff-signature-form]");
+  if (!form) return;
+  event.preventDefault();
+  const status = form.querySelector("[data-staff-ticket-reply-status], [data-staff-signature-status]");
+  syncRichEditor(form);
+  const payload = new FormData(form);
+  payload.set("action", form.matches("[data-staff-signature-form]") ? "signature" : "reply");
+  if (form.matches("[data-staff-ticket-reply-form]")) payload.set("ticket_id", form.dataset.ticketId || "");
+  try {
+    const response = await fetch("/api/staff/ticket-action", {
+      method: "POST",
+      body: payload,
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await response.json();
+    if (status) {
+      status.textContent = data.success ? "Saved." : (data.message || "Could not save.");
+      status.className = data.success ? "form-status ok" : "form-status bad";
+    }
+    if (data.success) {
+      if (form.matches("[data-staff-ticket-reply-form]")) form.querySelector("[data-rich-content]").innerHTML = "";
+      renderStaffTicketList(data.tickets || [], data.signature_html || "");
+    }
+  } catch {
+    if (status) {
+      status.textContent = "Could not save from this browser session.";
+      status.className = "form-status bad";
+    }
+  }
+});
+
 async function commandOptionsForButton(button) {
   const action = button.dataset.queueCommand;
   const targetName = button.dataset.targetName || "";
@@ -1545,17 +1875,54 @@ document.addEventListener("click", async (event) => {
     const data = await parseJsonResponse(response);
     if (!data.success) {
       setCommandStatus("bad", "Action blocked", data.message || "Command could not be sent.");
+      if ((button.dataset.queueCommand || "") === "agent.update") {
+        document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
+      }
       return;
     }
     renderRecentCommandStatus(data.commands || []);
-    setCommandStatus("good", "Action sent", data.message || "The host agent is picking this up now.");
+    setCommandStatus("good", (button.dataset.queueCommand || "") === "agent.update" ? "Agent update sent" : "Action sent", data.message || "The host agent is picking this up now.");
     startLiveRefreshBurst();
   } catch (error) {
     console.error("VisorCore command queue failed", error);
     setCommandStatus("bad", "Action failed", "Command could not be sent from this browser session.");
+    if ((button.dataset.queueCommand || "") === "agent.update") {
+      document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
+    }
   } finally {
     button.disabled = false;
     updateVmToolbarState();
+  }
+});
+
+document.addEventListener("click", async (event) => {
+  const updateAll = event.target.closest("[data-update-all-agents]");
+  if (updateAll) {
+    const buttons = Array.from(document.querySelectorAll("[data-agent-update-button]")).filter((button) => !button.disabled);
+    if (!buttons.length) return;
+    updateAll.disabled = true;
+    for (const button of buttons) {
+      button.click();
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+    updateAll.disabled = false;
+    return;
+  }
+  const copyManual = event.target.closest("[data-copy-manual-agent-update]");
+  if (copyManual) {
+    const status = document.querySelector("[data-manual-agent-update-status]");
+    try {
+      await copyTextToClipboard(manualAgentUpdateCommand());
+      if (status) {
+        status.textContent = "Manual update command copied.";
+        status.className = "copy-status good";
+      }
+    } catch {
+      if (status) {
+        status.textContent = "Copy failed. Select the command manually.";
+        status.className = "copy-status bad";
+      }
+    }
   }
 });
 
@@ -1977,13 +2344,17 @@ function clientActionButtons(client) {
 function staffHostActionButtons(host) {
   const id = escapeHtml(host.id || "");
   const deleting = ["deletion_requested", "delete_command_sent"].includes(host.status || "");
+  const needsUpdate = agentUpdateAvailable(host);
   return `<div class="client-actions">
+    ${needsUpdate ? `<button type="button" data-staff-host-action="update_agent" data-host-id="${id}">Update Agent</button>` : ""}
     <button type="button" data-staff-host-action="${deleting ? "hard_delete" : "delete"}" data-host-id="${id}">${deleting ? "Hard Delete" : "Soft Delete"}</button>
   </div>`;
 }
 
 function renderStaffDashboard(data) {
   renderStaffAdmin(data.admin || {});
+  latestAgentVersion = data.latest_agent_version || latestAgentVersion;
+  renderStaffTicketList(data.tickets || [], data.signature_html || "");
   Object.entries(data.summary || {}).forEach(([key, value]) => {
     document.querySelectorAll(`[data-admin-stat="${key}"]`).forEach((item) => {
       item.textContent = value;
@@ -2052,7 +2423,7 @@ function renderStaffDashboard(data) {
       adminHostsTable.insertAdjacentHTML("beforeend", tableRow([
         escapeHtml(host.computer_name || ""),
         escapeHtml(host.workspace || ""),
-        pill(deleting ? "Removal Requested" : (host.agent_status || host.status || "Pending"), String(host.agent_status || "").toLowerCase() === "online" && !deleting ? "good" : "warn"),
+        `${pill(deleting ? "Removal Requested" : (host.agent_status || host.status || "Pending"), String(host.agent_status || "").toLowerCase() === "online" && !deleting ? "good" : "warn")} ${pill(`Agent ${agentVersionForHost(host) || "Unknown"}`, agentUpdateAvailable(host) ? "warn" : "good")}`,
         escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "Never"),
         staffHostActionButtons(host),
       ]));
@@ -2109,7 +2480,7 @@ document.addEventListener("click", async (event) => {
   if (!actionButton) return;
   const action = actionButton.dataset.staffHostAction;
   const hostId = actionButton.dataset.hostId;
-  if (!hostId || !["delete", "hard_delete"].includes(action)) return;
+  if (!hostId || !["delete", "hard_delete", "update_agent"].includes(action)) return;
   if (action === "delete" && !window.confirm("Soft delete this host? VisorCore will ask the online agent to unregister its scheduled task before removing the portal record.")) return;
   if (action === "hard_delete" && !window.confirm("Hard delete this host record from VisorCore Admin? This removes only the portal record and does not remove the scheduled task.")) return;
   actionButton.disabled = true;
