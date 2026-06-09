@@ -190,7 +190,7 @@ async function submitStaffLogin(form) {
     localStorage.setItem("visorcore-staff-admin", JSON.stringify(data.admin || {}));
     renderStaffAdmin(data.admin || {});
     if (status) {
-      status.textContent = data.admin?.mfa_required ? "Staff console unlocked." : "Staff console unlocked. MFA is temporarily disabled for this account.";
+      status.textContent = data.admin?.mfa_required ? "Staff console unlocked with MFA." : "Staff console unlocked. Configure staff MFA from Admins and Staff.";
       status.classList.add("ok");
     }
     showConsole("[data-staff-console]", "full_access");
@@ -1675,6 +1675,82 @@ document.addEventListener("click", async (event) => {
   } finally {
     button.disabled = false;
   }
+});
+
+async function postStaffMfaAction(action, code = "") {
+  const body = new FormData();
+  body.set("action", action);
+  if (code) body.set("code", code);
+  const response = await fetch("/api/staff/mfa", {
+    method: "POST",
+    body,
+    headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+  });
+  return response.json();
+}
+
+document.querySelectorAll("[data-staff-mfa-setup]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const status = document.querySelector("[data-staff-mfa-status]");
+    button.disabled = true;
+    if (status) {
+      status.textContent = "Preparing staff MFA enrollment...";
+      status.className = "form-status";
+    }
+    try {
+      const data = await postStaffMfaAction("start");
+      if (status) {
+        status.textContent = data.message || (data.success ? "Scan the staff MFA QR code." : "Staff MFA setup failed.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (!data.success) return;
+      document.querySelector("[data-staff-mfa-panel]")?.removeAttribute("hidden");
+      const qr = document.querySelector("[data-staff-mfa-qr]");
+      const secret = document.querySelector("[data-staff-mfa-secret]");
+      if (qr) qr.src = data.qr_url || "";
+      if (secret) secret.textContent = data.secret || "";
+      if (data.admin) {
+        localStorage.setItem("visorcore-staff-admin", JSON.stringify(data.admin));
+        renderStaffAdmin(data.admin);
+      }
+    } catch {
+      if (status) {
+        status.textContent = "Staff MFA setup could not start from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+
+document.querySelectorAll("[data-staff-mfa-verify]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const status = document.querySelector("[data-staff-mfa-status]");
+    const code = document.querySelector("[data-staff-mfa-code]")?.value || "";
+    button.disabled = true;
+    try {
+      const data = await postStaffMfaAction("verify", code);
+      if (status) {
+        status.textContent = data.message || (data.success ? "Staff MFA enabled." : "Staff MFA verification failed.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (data.success) {
+        document.querySelector("[data-staff-mfa-panel]")?.setAttribute("hidden", "");
+        if (data.admin) {
+          localStorage.setItem("visorcore-staff-admin", JSON.stringify(data.admin));
+          renderStaffAdmin(data.admin);
+        }
+      }
+    } catch {
+      if (status) {
+        status.textContent = "Staff MFA code could not be verified from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  });
 });
 
 function renderStaffAdmin(admin) {
