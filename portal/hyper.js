@@ -132,6 +132,7 @@ function setConsoleAccess(mode, account = null) {
   consoleEl.querySelectorAll("[data-host-scope], [data-host-sync-mode], [data-host-sync-target]").forEach((control) => {
     control.disabled = !hasHosts || billingOnly;
   });
+  updateVmToolbarState();
   if (billingOnly) {
     activatePortalView(consoleEl.querySelector(".portal-shell"), "billing");
   }
@@ -398,6 +399,8 @@ let hostRequestsLoading = false;
 let lastPendingHostCount = 0;
 let hostRequestPollTimer = null;
 let connectedHostsCount = 0;
+let selectedVmKey = "";
+let latestVmInventory = [];
 
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
@@ -463,6 +466,28 @@ document.querySelectorAll("[data-host-open]").forEach((button) => button.addEven
 document.querySelectorAll("[data-host-close]").forEach((button) => button.addEventListener("click", closeHost));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeHost();
+});
+
+const vmConsoleModal = document.querySelector("[data-vm-console-modal]");
+function openVmConsole(vm) {
+  if (!vmConsoleModal || !vm) return;
+  const title = vmConsoleModal.querySelector("[data-vm-console-title]");
+  const host = vmConsoleModal.querySelector("[data-vm-console-host]");
+  if (title) title.textContent = `${vm.name || "VM"} Console`;
+  if (host) host.textContent = `${vm.host || "Hyper-V Host"} - ${vm.state || "Unknown"}`;
+  vmConsoleModal.classList.add("is-open");
+  vmConsoleModal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+}
+function closeVmConsole() {
+  if (!vmConsoleModal) return;
+  vmConsoleModal.classList.remove("is-open");
+  vmConsoleModal.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+}
+document.querySelectorAll("[data-vm-console-close]").forEach((button) => button.addEventListener("click", closeVmConsole));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeVmConsole();
 });
 
 async function copyTextToClipboard(text) {
@@ -735,6 +760,51 @@ function vmStatePill(state) {
   return pill(value, "warn");
 }
 
+function vmKey(vm) {
+  return `${vm.host_id || ""}::${vm.name || ""}`;
+}
+
+function findSelectedVm() {
+  return latestVmInventory.find((vm) => vmKey(vm) === selectedVmKey) || null;
+}
+
+function updateVmToolbarState() {
+  const selected = findSelectedVm();
+  const label = document.querySelector("[data-selected-vm-label]");
+  const consoleEl = document.querySelector("[data-console]");
+  const fullAccess = consoleEl?.classList.contains("is-unlocked") && !consoleEl?.classList.contains("is-suspended");
+  if (label) {
+    label.textContent = selected ? `${selected.name || "Selected VM"} on ${selected.host || "host"}` : "Select a VM to control it";
+  }
+  document.querySelectorAll("[data-vm-toolbar-command]").forEach((button) => {
+    if (selected) {
+      button.dataset.queueCommand = button.dataset.vmToolbarCommand;
+      button.dataset.targetType = "vm";
+      button.dataset.hostId = selected.host_id || "";
+      button.dataset.targetName = selected.name || "";
+      button.dataset.targetId = selected.id || "";
+    } else {
+      delete button.dataset.queueCommand;
+      delete button.dataset.targetType;
+      delete button.dataset.hostId;
+      delete button.dataset.targetName;
+      delete button.dataset.targetId;
+    }
+    button.disabled = !selected || !fullAccess;
+    button.setAttribute("aria-disabled", !selected || !fullAccess ? "true" : "false");
+  });
+  document.querySelectorAll("[data-vm-toolbar-console]").forEach((button) => {
+    button.disabled = !selected;
+    button.setAttribute("aria-disabled", selected ? "false" : "true");
+  });
+}
+
+function vmSelectionButton(vm) {
+  const key = escapeHtml(vmKey(vm));
+  const active = key === escapeHtml(selectedVmKey) ? " active" : "";
+  return `<button type="button" class="vm-select-button${active}" data-select-vm="${key}">${escapeHtml(vm.name || "Unnamed VM")}</button>`;
+}
+
 function commandButtonsForVm(vm) {
   const hostId = escapeHtml(vm.host_id || "");
   const name = escapeHtml(vm.name || "");
@@ -744,11 +814,18 @@ function commandButtonsForVm(vm) {
     : `<button type="button" data-queue-command="vm.start" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Start</button>`;
   return `<div class="row-actions">
     ${primary}
+    <button type="button" data-queue-command="vm.shutdown" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Shutdown</button>
+    <button type="button" class="danger" data-queue-command="vm.turn_off" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Power Off</button>
     <button type="button" data-queue-command="vm.restart" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Restart</button>
     <button type="button" data-queue-command="vm.checkpoint" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Checkpoint</button>
+    <button type="button" data-queue-command="vm.pause" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Pause</button>
+    <button type="button" data-queue-command="vm.resume" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Resume</button>
+    <button type="button" data-queue-command="vm.save" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Save</button>
     <button type="button" data-queue-command="vm.set_cpu" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">CPU</button>
     <button type="button" data-queue-command="vm.set_memory" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">RAM</button>
+    <button type="button" data-queue-command="vm.set_notes" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Notes</button>
     <button type="button" data-queue-command="vm.rename" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Rename</button>
+    <button type="button" data-open-vm-console data-vm-key="${escapeHtml(vmKey(vm))}">Console</button>
   </div>`;
 }
 
@@ -759,6 +836,15 @@ function commandButtonsForCheckpoint(checkpoint) {
   return `<div class="row-actions">
     <button type="button" data-queue-command="checkpoint.apply" data-target-type="checkpoint" data-host-id="${hostId}" data-target-name="${name}" data-option-vm-name="${vm}">Apply</button>
     <button type="button" class="danger" data-queue-command="checkpoint.delete" data-target-type="checkpoint" data-host-id="${hostId}" data-target-name="${name}" data-option-vm-name="${vm}">Delete</button>
+  </div>`;
+}
+
+function commandButtonsForDisk(disk) {
+  const hostId = escapeHtml(disk.host_id || "");
+  const path = escapeHtml(disk.path || "");
+  return `<div class="row-actions">
+    <button type="button" data-queue-command="disk.resize" data-target-type="disk" data-host-id="${hostId}" data-target-name="${path}">Resize</button>
+    <button type="button" data-queue-command="disk.optimize" data-target-type="disk" data-host-id="${hostId}" data-target-name="${path}">Optimize</button>
   </div>`;
 }
 
@@ -816,14 +902,17 @@ function renderInventoryViews(hosts) {
   }
 
   const vms = flattenInventory(approved, "vms");
+  latestVmInventory = vms;
+  if (selectedVmKey && !findSelectedVm()) selectedVmKey = "";
   const vmCount = inventoryCount(approved, "vm_count", "vms");
   setTableRows("[data-vm-table]", vms.map((vm) => [
-    escapeHtml(vm.name || "Unnamed VM"),
+    vmSelectionButton(vm),
     escapeHtml(vm.host || ""),
     escapeHtml(`${Number(vm.cpu_usage || 0)}% / ${Number(vm.memory_assigned_mb || 0)} MB`),
     vmStatePill(vm.state || vm.status),
     commandButtonsForVm(vm),
   ]));
+  updateVmToolbarState();
   setPanelEmpty("vms", vms.length === 0, vmCount > 0
     ? "This host is reporting VM counts only. Rerun the Add Host command once to upgrade the scheduled-task agent and populate VM details."
     : "VMs appear automatically after a host agent finishes inventory sync.");
@@ -863,7 +952,7 @@ function renderInventoryViews(hosts) {
     escapeHtml((disk.path || "").split(/[\\/]/).pop() || disk.path || "Virtual disk"),
     escapeHtml(disk.vm || ""),
     escapeHtml(`${Number(disk.size_gb || 0)} GB`),
-    escapeHtml(disk.type || disk.format || "Inspect"),
+    commandButtonsForDisk(disk),
   ]));
   setPanelEmpty("storage", disks.length === 0, "Storage inventory appears after host agent sync.");
 
@@ -892,8 +981,8 @@ function renderRecentCommandStatus(commands = []) {
   const latest = commands[0];
   const state = String(latest.status || "queued").toLowerCase();
   const target = latest.target_name ? ` ${latest.target_name}` : "";
-  status.textContent = `${latest.label || latest.action || "Command"}${target}: ${latest.message || state}`;
-  status.className = `command-status ${state === "succeeded" ? "good" : (state === "failed" ? "bad" : "")}`;
+  const title = state === "succeeded" ? "Action complete" : (state === "failed" ? "Action needs attention" : "Action in progress");
+  setCommandStatus(state === "succeeded" ? "good" : (state === "failed" ? "bad" : "active"), title, `${latest.label || latest.action || "Command"}${target}: ${latest.message || state}`);
 }
 
 function renderHostRequests(data) {
@@ -1087,8 +1176,17 @@ function commandOptionsForButton(button) {
   const action = button.dataset.queueCommand;
   const targetName = button.dataset.targetName || "";
   const options = {};
-  if (["vm.stop", "vm.restart"].includes(action)) {
-    if (!window.confirm(`${action === "vm.stop" ? "Stop" : "Restart"} VM "${targetName}"?`)) return null;
+  if (["vm.stop", "vm.restart", "vm.shutdown", "vm.turn_off", "vm.pause", "vm.resume", "vm.save"].includes(action)) {
+    const labels = {
+      "vm.stop": "Stop",
+      "vm.restart": "Restart",
+      "vm.shutdown": "request guest shutdown for",
+      "vm.turn_off": "power off",
+      "vm.pause": "Pause",
+      "vm.resume": "Resume",
+      "vm.save": "Save",
+    };
+    if (!window.confirm(`${labels[action] || "Run action on"} VM "${targetName}"?`)) return null;
   }
   if (action === "vm.checkpoint") {
     const name = window.prompt(`Checkpoint name for "${targetName}"`, `VisorCore ${new Date().toLocaleString()}`);
@@ -1100,6 +1198,11 @@ function commandOptionsForButton(button) {
     if (!name || name === targetName) return null;
     options.new_name = name;
   }
+  if (action === "vm.set_notes" || action === "switch.set_notes") {
+    const notes = window.prompt(`Notes for "${targetName}"`, "");
+    if (notes === null) return null;
+    options.notes = notes;
+  }
   if (action === "vm.set_cpu") {
     const count = window.prompt(`CPU count for "${targetName}"`, "2");
     if (!count) return null;
@@ -1110,6 +1213,16 @@ function commandOptionsForButton(button) {
     if (!startupGb) return null;
     options.startup_gb = startupGb;
   }
+  if (action === "vm.export") {
+    const path = window.prompt(`Export path on the Hyper-V host for "${targetName}"`, "C:\\VMExports");
+    if (!path) return null;
+    options.path = path;
+  }
+  if (action === "vm.move_storage") {
+    const path = window.prompt(`Destination storage path on the Hyper-V host for "${targetName}"`, "D:\\Hyper-V");
+    if (!path) return null;
+    options.path = path;
+  }
   if (action === "checkpoint.apply") {
     if (!window.confirm(`Apply checkpoint "${targetName}" to VM "${button.dataset.optionVmName || ""}"? This will restore the VM to that checkpoint.`)) return null;
     options.vm_name = button.dataset.optionVmName || "";
@@ -1118,25 +1231,49 @@ function commandOptionsForButton(button) {
     if (!window.confirm(`Delete checkpoint "${targetName}" from VM "${button.dataset.optionVmName || ""}"?`)) return null;
     options.vm_name = button.dataset.optionVmName || "";
   }
-  if (action === "switch.set_notes") {
-    const notes = window.prompt(`Notes for switch "${targetName}"`, "");
-    if (notes === null) return null;
-    options.notes = notes;
+  if (action === "disk.resize") {
+    const sizeGb = window.prompt("New virtual disk size in GB", "128");
+    if (!sizeGb) return null;
+    options.size_gb = sizeGb;
+  }
+  if (action === "disk.optimize") {
+    if (!window.confirm(`Optimize virtual disk "${targetName}"?`)) return null;
   }
   return options;
 }
 
+function setCommandStatus(type, title, message) {
+  const status = document.querySelector("[data-command-status]");
+  if (!status) return;
+  status.className = `command-status ${type || ""}`;
+  status.innerHTML = `<span class="status-orb" aria-hidden="true"></span><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(message)}</small></span>`;
+}
+
+document.addEventListener("click", (event) => {
+  const selector = event.target.closest("[data-select-vm]");
+  if (selector) {
+    selectedVmKey = selector.dataset.selectVm || "";
+    updateVmToolbarState();
+    document.querySelectorAll("[data-select-vm]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.selectVm === selectedVmKey);
+    });
+    return;
+  }
+  const consoleButton = event.target.closest("[data-open-vm-console], [data-vm-toolbar-console]");
+  if (consoleButton) {
+    const key = consoleButton.dataset.vmKey || selectedVmKey;
+    const vm = latestVmInventory.find((item) => vmKey(item) === key);
+    openVmConsole(vm);
+  }
+});
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-queue-command]");
   if (!button) return;
-  const status = document.querySelector("[data-command-status]");
   const options = commandOptionsForButton(button);
   if (options === null) return;
   button.disabled = true;
-  if (status) {
-    status.textContent = "Queueing Hyper-V command...";
-    status.className = "command-status";
-  }
+  setCommandStatus("active", "Sending action", `${button.textContent.trim() || "Command"} is being handed to the host agent.`);
   try {
     const body = new FormData();
     body.set("host_id", button.dataset.hostId || "");
@@ -1153,25 +1290,17 @@ document.addEventListener("click", async (event) => {
     });
     const data = await parseJsonResponse(response);
     if (!data.success) {
-      if (status) {
-        status.textContent = data.message || "Command could not be queued.";
-        status.className = "command-status bad";
-      }
+      setCommandStatus("bad", "Action blocked", data.message || "Command could not be sent.");
       return;
     }
-    if (status) {
-      status.textContent = data.message || "Command queued. Waiting for the live command channel.";
-      status.className = "command-status good";
-    }
+    setCommandStatus("good", "Action accepted", data.message || "The host agent is picking this up now.");
     window.setTimeout(loadHostRequests, 2200);
   } catch (error) {
     console.error("VisorCore command queue failed", error);
-    if (status) {
-      status.textContent = "Command could not be queued from this browser session.";
-      status.className = "command-status bad";
-    }
+    setCommandStatus("bad", "Action failed", "Command could not be sent from this browser session.");
   } finally {
     button.disabled = false;
+    updateVmToolbarState();
   }
 });
 
