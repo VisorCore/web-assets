@@ -952,7 +952,7 @@ function renderHostRequests(data) {
           <div>
             <strong>${escapeHtml(host.computer_name || "Unnamed Hyper-V Host")}</strong>
             <span>${escapeHtml(host.region || "us-central")} - ${deleting ? "Removal requested" : (online ? "Agent online" : "Agent approved, waiting for check-in")}</span>
-            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task checks in every 60 seconds after approval.")}</small>
+            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task syncs inventory every 60 seconds and listens for commands every 2 seconds after approval.")}</small>
           </div>
           <div class="connected-host-meta">
             ${deleting ? pill("Removal Requested", "warn") : (online ? pill("Online", "good") : hostStatusPill("approved"))}
@@ -1160,7 +1160,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (status) {
-      status.textContent = data.message || "Command queued. Waiting for next agent check-in.";
+      status.textContent = data.message || "Command queued. Waiting for the live command channel.";
       status.className = "command-status good";
     }
     window.setTimeout(loadHostRequests, 2200);
