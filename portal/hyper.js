@@ -687,6 +687,8 @@ function flattenInventory(hosts, key) {
   return hosts.flatMap((host) => inventoryArray(host, key).map((item) => ({
     ...item,
     host: item.host || host.computer_name || "Host",
+    host_id: host.id || "",
+    workspace: host.workspace || "",
   })));
 }
 
@@ -731,6 +733,33 @@ function vmStatePill(state) {
   if (lower === "running") return pill(value, "good");
   if (["off", "paused", "saved"].includes(lower)) return pill(value, lower === "off" ? "" : "warn");
   return pill(value, "warn");
+}
+
+function commandButtonsForVm(vm) {
+  const hostId = escapeHtml(vm.host_id || "");
+  const name = escapeHtml(vm.name || "");
+  const state = String(vm.state || "").toLowerCase();
+  const primary = state === "running"
+    ? `<button type="button" class="danger" data-queue-command="vm.stop" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Stop</button>`
+    : `<button type="button" data-queue-command="vm.start" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Start</button>`;
+  return `<div class="row-actions">
+    ${primary}
+    <button type="button" data-queue-command="vm.restart" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Restart</button>
+    <button type="button" data-queue-command="vm.checkpoint" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Checkpoint</button>
+    <button type="button" data-queue-command="vm.set_cpu" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">CPU</button>
+    <button type="button" data-queue-command="vm.set_memory" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">RAM</button>
+    <button type="button" data-queue-command="vm.rename" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Rename</button>
+  </div>`;
+}
+
+function commandButtonsForCheckpoint(checkpoint) {
+  const hostId = escapeHtml(checkpoint.host_id || "");
+  const name = escapeHtml(checkpoint.name || "");
+  const vm = escapeHtml(checkpoint.vm || "");
+  return `<div class="row-actions">
+    <button type="button" data-queue-command="checkpoint.apply" data-target-type="checkpoint" data-host-id="${hostId}" data-target-name="${name}" data-option-vm-name="${vm}">Apply</button>
+    <button type="button" class="danger" data-queue-command="checkpoint.delete" data-target-type="checkpoint" data-host-id="${hostId}" data-target-name="${name}" data-option-vm-name="${vm}">Delete</button>
+  </div>`;
 }
 
 function renderOverviewInventory(hosts) {
@@ -793,6 +822,7 @@ function renderInventoryViews(hosts) {
     escapeHtml(vm.host || ""),
     escapeHtml(`${Number(vm.cpu_usage || 0)}% / ${Number(vm.memory_assigned_mb || 0)} MB`),
     vmStatePill(vm.state || vm.status),
+    commandButtonsForVm(vm),
   ]));
   setPanelEmpty("vms", vms.length === 0, vmCount > 0
     ? "This host is reporting VM counts only. Rerun the Add Host command once to upgrade the scheduled-task agent and populate VM details."
@@ -805,6 +835,10 @@ function renderInventoryViews(hosts) {
       <div>
         <b>${escapeHtml(item.name || "Virtual Switch")}</b>
         <span>${escapeHtml(item.host || "")} - ${escapeHtml(item.switch_type || "Switch")}${item.net_adapter ? ` - ${escapeHtml(item.net_adapter)}` : ""}</span>
+        <div class="network-actions">
+          <button type="button" data-queue-command="switch.rename" data-target-type="switch" data-host-id="${escapeHtml(item.host_id || "")}" data-target-name="${escapeHtml(item.name || "")}">Rename</button>
+          <button type="button" data-queue-command="switch.set_notes" data-target-type="switch" data-host-id="${escapeHtml(item.host_id || "")}" data-target-name="${escapeHtml(item.name || "")}">Notes</button>
+        </div>
       </div>
     `).join("");
     networkGrid.style.display = switches.length ? "" : "none";
@@ -820,6 +854,7 @@ function renderInventoryViews(hosts) {
     escapeHtml(checkpoint.name || "Checkpoint"),
     escapeHtml(formatInventoryDate(checkpoint.created_at)),
     pill(checkpoint.type || "Checkpoint", "warn"),
+    commandButtonsForCheckpoint(checkpoint),
   ]));
   setPanelEmpty("checkpoints", checkpoints.length === 0, "Checkpoints will appear here after connected hosts report VM inventory.");
 
@@ -849,6 +884,16 @@ function renderInventoryViews(hosts) {
     escapeHtml(`${event.id || ""} ${String(event.message || "").slice(0, 140)}`),
   ]));
   setPanelEmpty("events", events.length === 0, "Host, VM, checkpoint, migration, and replication events appear after the first agent sync.");
+}
+
+function renderRecentCommandStatus(commands = []) {
+  const status = document.querySelector("[data-command-status]");
+  if (!status || !Array.isArray(commands) || commands.length === 0) return;
+  const latest = commands[0];
+  const state = String(latest.status || "queued").toLowerCase();
+  const target = latest.target_name ? ` ${latest.target_name}` : "";
+  status.textContent = `${latest.label || latest.action || "Command"}${target}: ${latest.message || state}`;
+  status.className = `command-status ${state === "succeeded" ? "good" : (state === "failed" ? "bad" : "")}`;
 }
 
 function renderHostRequests(data) {
@@ -930,6 +975,7 @@ function renderHostRequests(data) {
     control.disabled = approved.length === 0;
   });
   renderInventoryViews(hosts);
+  renderRecentCommandStatus(data.commands || []);
   if (popup) {
     popup.hidden = pending.length === 0;
     if (popupText && pending.length) {
@@ -1032,6 +1078,98 @@ document.addEventListener("click", async (event) => {
     console.error("VisorCore host action failed", error);
     const refreshed = await loadHostRequests();
     if (!refreshed) window.alert("Host status could not be refreshed from this browser session. Sign out, sign back in, and try again.");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function commandOptionsForButton(button) {
+  const action = button.dataset.queueCommand;
+  const targetName = button.dataset.targetName || "";
+  const options = {};
+  if (["vm.stop", "vm.restart"].includes(action)) {
+    if (!window.confirm(`${action === "vm.stop" ? "Stop" : "Restart"} VM "${targetName}"?`)) return null;
+  }
+  if (action === "vm.checkpoint") {
+    const name = window.prompt(`Checkpoint name for "${targetName}"`, `VisorCore ${new Date().toLocaleString()}`);
+    if (!name) return null;
+    options.name = name;
+  }
+  if (action === "vm.rename" || action === "switch.rename") {
+    const name = window.prompt(`New name for "${targetName}"`, targetName);
+    if (!name || name === targetName) return null;
+    options.new_name = name;
+  }
+  if (action === "vm.set_cpu") {
+    const count = window.prompt(`CPU count for "${targetName}"`, "2");
+    if (!count) return null;
+    options.count = count;
+  }
+  if (action === "vm.set_memory") {
+    const startupGb = window.prompt(`Startup memory in GB for "${targetName}"`, "4");
+    if (!startupGb) return null;
+    options.startup_gb = startupGb;
+  }
+  if (action === "checkpoint.apply") {
+    if (!window.confirm(`Apply checkpoint "${targetName}" to VM "${button.dataset.optionVmName || ""}"? This will restore the VM to that checkpoint.`)) return null;
+    options.vm_name = button.dataset.optionVmName || "";
+  }
+  if (action === "checkpoint.delete") {
+    if (!window.confirm(`Delete checkpoint "${targetName}" from VM "${button.dataset.optionVmName || ""}"?`)) return null;
+    options.vm_name = button.dataset.optionVmName || "";
+  }
+  if (action === "switch.set_notes") {
+    const notes = window.prompt(`Notes for switch "${targetName}"`, "");
+    if (notes === null) return null;
+    options.notes = notes;
+  }
+  return options;
+}
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-queue-command]");
+  if (!button) return;
+  const status = document.querySelector("[data-command-status]");
+  const options = commandOptionsForButton(button);
+  if (options === null) return;
+  button.disabled = true;
+  if (status) {
+    status.textContent = "Queueing Hyper-V command...";
+    status.className = "command-status";
+  }
+  try {
+    const body = new FormData();
+    body.set("host_id", button.dataset.hostId || "");
+    body.set("command", button.dataset.queueCommand || "");
+    body.set("target_type", button.dataset.targetType || "");
+    body.set("target_name", button.dataset.targetName || "");
+    body.set("target_id", button.dataset.targetId || "");
+    body.set("options", JSON.stringify(options));
+    const response = await fetch("/api/commands", {
+      method: "POST",
+      body,
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await parseJsonResponse(response);
+    if (!data.success) {
+      if (status) {
+        status.textContent = data.message || "Command could not be queued.";
+        status.className = "command-status bad";
+      }
+      return;
+    }
+    if (status) {
+      status.textContent = data.message || "Command queued. Waiting for next agent check-in.";
+      status.className = "command-status good";
+    }
+    window.setTimeout(loadHostRequests, 2200);
+  } catch (error) {
+    console.error("VisorCore command queue failed", error);
+    if (status) {
+      status.textContent = "Command could not be queued from this browser session.";
+      status.className = "command-status bad";
+    }
   } finally {
     button.disabled = false;
   }

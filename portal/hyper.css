@@ -995,6 +995,10 @@
   padding: 14px;
   border-bottom: 1px solid var(--line);
 }
+[data-vm-table] > div,
+[data-checkpoint-table] > div {
+  grid-template-columns: 1.25fr 1fr .9fr .9fr 1.8fr;
+}
 .data-table > div:first-child {
   background: rgba(16,168,255,.08);
   color: var(--cyan);
@@ -1095,6 +1099,41 @@
 }
 .copy-status.good { color: var(--good); }
 .copy-status.bad { color: var(--bad); }
+.command-status {
+  min-height: 22px;
+  margin: -6px 0 16px;
+  color: var(--muted);
+  font-weight: 850;
+}
+.command-status.good { color: var(--good); }
+.command-status.bad { color: var(--bad); }
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.row-actions button,
+.network-actions button {
+  border: 1px solid rgba(99,226,255,.24);
+  border-radius: 7px;
+  background: rgba(16,168,255,.08);
+  color: var(--cyan);
+  padding: 7px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.row-actions button.danger {
+  border-color: rgba(255,92,122,.36);
+  background: rgba(255,92,122,.08);
+  color: #ff9aac;
+}
+.network-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
 .steps {
   color: var(--silver);
   line-height: 1.8;
