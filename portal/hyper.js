@@ -114,7 +114,7 @@ function setConsoleAccess(mode, account = null) {
   const note = consoleEl.querySelector("[data-access-note]");
   if (note) {
     note.textContent = billingOnly
-      ? "Account suspended. Only invoices are available until outstanding balances are paid."
+      ? "Account suspended. Only Billing is available until outstanding balances are paid."
       : fullAccess
       ? `Full management access unlocked${account?.company ? ` for ${account.company}` : ""}.`
       : "View-only mode. Confirm your email to unlock add, edit, delete, and host onboarding actions.";
@@ -137,6 +137,22 @@ function setConsoleAccess(mode, account = null) {
     activatePortalView(consoleEl.querySelector(".portal-shell"), "billing");
   }
 }
+
+document.querySelectorAll("[data-agent-status-open]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const shell = document.querySelector(".portal-shell");
+    activatePortalView(shell, "hosts");
+    document.querySelector("[data-host-open]")?.focus();
+  });
+});
+
+document.querySelectorAll("[data-mfa-ready-open]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const shell = document.querySelector(".portal-shell");
+    activatePortalView(shell, "profile");
+    document.querySelector("[data-mfa-setup]")?.click();
+  });
+});
 
 document.querySelectorAll("[data-preview-console]").forEach((button) => {
   button.addEventListener("click", (event) => {
@@ -271,6 +287,10 @@ async function submitAuthForm(form, endpoint) {
     });
     const data = await response.json();
     if (!data.success) {
+      if (data.mfa_required) {
+        form.querySelector("[data-login-mfa-field]")?.removeAttribute("hidden");
+        form.querySelector('[name="mfa"]')?.focus();
+      }
       if (status) {
         status.textContent = data.message || "The request could not be completed.";
         status.classList.add("bad");
@@ -290,9 +310,9 @@ async function submitAuthForm(form, endpoint) {
       const billingOnly = data.mode === "billing_only";
       showAuthResult(
         billingOnly ? "Billing attention needed" : (full ? "Signed in" : "Email confirmation needed"),
-        billingOnly ? "Invoices are available." : (full ? "Console unlocked." : "Verify your email to unlock full control."),
+        billingOnly ? "Billing is available." : (full ? "Console unlocked." : "Verify your email to unlock full control."),
         data.message || "",
-        billingOnly ? "Open Invoices" : (full ? "Open Console" : "Open View-Only Console")
+        billingOnly ? "Open Billing" : (full ? "Open Console" : "Open View-Only Console")
       );
       showConsole("[data-console]", data.mode || "view_only", data.account);
       startHostRequestPolling();
@@ -415,7 +435,7 @@ function activatePortalView(shell, view) {
     view = "billing";
     const status = document.querySelector("[data-billing-status]");
     if (status) {
-      status.textContent = "Account suspended. Only invoices are available until billing is current.";
+      status.textContent = "Account suspended. Only Billing is available until billing is current.";
       status.className = "form-status bad";
     }
   }
@@ -424,6 +444,7 @@ function activatePortalView(shell, view) {
     panel.classList.toggle("active", panel.dataset.viewPanel === view);
   });
   if (view === "billing" && consoleEl && !billingInvoicesLoading) loadBillingInvoices();
+  if (view === "users" && consoleEl) loadSubUsers();
   if (view === "hosts" && consoleEl && !hostRequestsLoading) loadHostRequests();
 }
 
@@ -443,7 +464,7 @@ const hostModal = document.querySelector("[data-host-modal]");
 const openHost = () => {
   const consoleEl = document.querySelector("[data-console]");
   if (consoleEl?.classList.contains("is-suspended")) {
-    showAuthResult("Account suspended", "Billing must be current first.", "Hyper-V host onboarding is paused while the account is suspended. Open Invoices, pay the outstanding balance, and access will restore automatically.", "Open Invoices");
+    showAuthResult("Account suspended", "Billing must be current first.", "Hyper-V host onboarding is paused while the account is suspended. Open Billing, pay the outstanding balance, and access will restore automatically.", "Open Billing");
     activatePortalView(consoleEl.querySelector(".portal-shell"), "billing");
     return;
   }
@@ -600,7 +621,16 @@ function renderAccountUi(account) {
       `Register-VisorCoreHost -Workspace "${workspaceCode}" -Region "us-central" -RequireMfa`,
     ].join("\n");
   }
-  document.querySelector("[data-mfa-status]")?.replaceChildren(document.createTextNode(account.mfa_status === "enabled" ? "Enabled" : "Not configured. TOTP/passkey setup will be available here."));
+  const mfaStatus = document.querySelector("[data-mfa-status]");
+  if (mfaStatus) {
+    const statusText = account.mfa_status === "enabled"
+      ? "Enabled. A 6-digit authenticator code is required at sign-in."
+      : (account.mfa_status === "pending_verification" ? "Pending verification. Scan the QR code and verify a code to finish setup." : "Not configured. Click Configure MFA to enroll an authenticator app.");
+    mfaStatus.textContent = statusText;
+  }
+  if (Array.isArray(account.sub_users)) {
+    renderSubUsers({ users: account.sub_users });
+  }
 }
 
 async function refreshAccountSession() {
@@ -636,7 +666,7 @@ function renderInvoices(data) {
   if (summary) {
     summary.textContent = total > 0
       ? "Pay all outstanding balances to automatically restore Hyper Portal access."
-      : "No outstanding balance is currently due. Suspended accounts can reactivate automatically from here.";
+      : "Your subscription/license is active. Payment methods, billing periods, credits, and invoices are managed from this Billing workspace.";
   }
   if (table) {
     table.querySelectorAll("div:not(:first-child)").forEach((row) => row.remove());
@@ -654,6 +684,57 @@ function renderInvoices(data) {
   if (pay) {
     pay.textContent = total > 0 ? `Pay ${money(total)} and Unsuspend` : "Reactivate Account";
     pay.hidden = getStoredAccount()?.account_status !== "suspended" && total <= 0;
+  }
+}
+
+function permissionLabel(permission) {
+  const labels = {
+    "vm.manage": "VMs",
+    "switch.manage": "Switches",
+    "checkpoint.manage": "Checkpoints",
+    "storage.manage": "Storage",
+    "replication.manage": "Replication",
+    "events.view": "Events",
+    "users.manage": "Users",
+    "account.admin": "Admin",
+    "owner.transfer": "Owner transfer",
+  };
+  return labels[permission] || permission;
+}
+
+function renderSubUsers(data) {
+  const users = Array.isArray(data.users) ? data.users : [];
+  const table = document.querySelector("[data-subusers-table]");
+  const empty = document.querySelector("[data-subusers-empty]");
+  if (table) {
+    table.querySelectorAll("div:not(:first-child)").forEach((row) => row.remove());
+    users.forEach((user) => {
+      table.insertAdjacentHTML("beforeend", tableRow([
+        `<span><strong>${escapeHtml(user.name || "Sub-user")}</strong><small>${escapeHtml(user.email || "")}</small></span>`,
+        escapeHtml(user.role || "Operator"),
+        escapeHtml((user.permissions || []).map(permissionLabel).join(", ") || "No permissions"),
+        user.mfa_required ? pill("Required", "good") : pill("Optional", "warn"),
+        `<div class="row-actions"><span>${pill(user.status || "invited", "warn")}</span><button type="button" class="danger" data-subuser-delete="${escapeHtml(user.id || "")}">Remove</button></div>`,
+      ]));
+    });
+  }
+  if (empty) empty.style.display = users.length ? "none" : "block";
+}
+
+async function loadSubUsers() {
+  if (!document.querySelector("[data-subusers-table]")) return;
+  try {
+    const response = await fetch("/api/account/users", {
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await response.json();
+    if (data.success) renderSubUsers(data);
+  } catch {
+    const status = document.querySelector("[data-subuser-status]");
+    if (status) {
+      status.textContent = "Sub-users could not be loaded from this browser session.";
+      status.className = "form-status bad";
+    }
   }
 }
 
@@ -675,7 +756,7 @@ async function loadBillingInvoices() {
   } catch {
     const status = document.querySelector("[data-billing-status]");
     if (status) {
-      status.textContent = "Invoices could not be loaded from this browser session.";
+      status.textContent = "Billing could not be loaded from this browser session.";
       status.className = "form-status bad";
     }
   } finally {
@@ -1419,16 +1500,181 @@ document.querySelectorAll("[data-resend-form]").forEach((form) => {
   });
 });
 
+async function postMfaAction(action, code = "") {
+  const body = new FormData();
+  body.set("action", action);
+  if (code) body.set("code", code);
+  const response = await fetch("/api/auth/mfa", {
+    method: "POST",
+    body,
+    headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+  });
+  return response.json();
+}
+
 document.querySelectorAll("[data-mfa-setup]").forEach((button) => {
-  button.addEventListener("click", () => {
+  button.addEventListener("click", async () => {
     const status = document.querySelector("[data-profile-status]");
-    const mfa = document.querySelector("[data-mfa-status]");
-    if (mfa) mfa.textContent = "MFA setup is queued for the next security pass: TOTP, recovery codes, and passkeys.";
+    const panel = document.querySelector("[data-mfa-panel]");
+    const qr = document.querySelector("[data-mfa-qr]");
+    const secret = document.querySelector("[data-mfa-secret]");
+    button.disabled = true;
     if (status) {
-      status.textContent = "MFA setup controls are active here. TOTP/passkey enrollment will be connected in the next backend security pass.";
-      status.className = "form-status ok";
+      status.textContent = "Preparing MFA enrollment...";
+      status.className = "form-status";
+    }
+    try {
+      const data = await postMfaAction("start");
+      if (status) {
+        status.textContent = data.message || (data.success ? "Scan the MFA QR code." : "MFA setup failed.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (!data.success) return;
+      if (panel) panel.hidden = false;
+      if (qr) qr.src = data.qr_url || "";
+      if (secret) secret.textContent = data.secret || "";
+      if (data.account) {
+        storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
+      }
+    } catch {
+      if (status) {
+        status.textContent = "MFA setup could not start from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      button.disabled = false;
     }
   });
+});
+
+document.querySelectorAll("[data-mfa-verify]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const status = document.querySelector("[data-profile-status]");
+    const code = document.querySelector("[data-mfa-code]")?.value || "";
+    button.disabled = true;
+    if (status) {
+      status.textContent = "Verifying MFA code...";
+      status.className = "form-status";
+    }
+    try {
+      const data = await postMfaAction("verify", code);
+      if (status) {
+        status.textContent = data.message || (data.success ? "MFA enabled." : "MFA verification failed.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (data.success) {
+        document.querySelector("[data-mfa-panel]")?.setAttribute("hidden", "");
+        if (data.account) storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
+      }
+    } catch {
+      if (status) {
+        status.textContent = "MFA code could not be verified from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+
+document.querySelectorAll("[data-mfa-disable]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const code = window.prompt("Enter your current 6-digit MFA code to disable MFA.");
+    if (!code) return;
+    const status = document.querySelector("[data-profile-status]");
+    button.disabled = true;
+    try {
+      const data = await postMfaAction("disable", code);
+      if (status) {
+        status.textContent = data.message || (data.success ? "MFA disabled." : "MFA could not be disabled.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (data.success && data.account) storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
+    } catch {
+      if (status) {
+        status.textContent = "MFA could not be disabled from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+
+document.querySelectorAll("[data-subuser-form]").forEach((form) => {
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const status = form.querySelector("[data-subuser-status]");
+    const submit = form.querySelector('button[type="submit"]');
+    const permissions = Array.from(form.querySelectorAll("[data-subuser-permissions] input:checked")).map((input) => input.value);
+    const body = new FormData(form);
+    body.set("action", "save");
+    body.set("permissions", JSON.stringify(permissions));
+    body.set("mfa_required", form.elements.mfa_required?.checked ? "1" : "0");
+    if (submit) submit.disabled = true;
+    if (status) {
+      status.textContent = "Inviting sub-user...";
+      status.className = "form-status";
+    }
+    try {
+      const response = await fetch("/api/account/users", {
+        method: "POST",
+        body,
+        headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+      });
+      const data = await response.json();
+      if (status) {
+        status.textContent = data.success ? "Sub-user saved. Invite email delivery is ready for the next mail pass." : (data.message || "Sub-user could not be saved.");
+        status.className = data.success ? "form-status ok" : "form-status bad";
+      }
+      if (data.success) {
+        form.reset();
+        renderSubUsers(data);
+        if (data.account) storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
+      }
+    } catch {
+      if (status) {
+        status.textContent = "Sub-user could not be saved from this browser session.";
+        status.className = "form-status bad";
+      }
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
+});
+
+document.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-subuser-delete]");
+  if (!button) return;
+  if (!window.confirm("Remove this sub-user from the workspace?")) return;
+  const status = document.querySelector("[data-subuser-status]");
+  const body = new FormData();
+  body.set("action", "delete");
+  body.set("user_id", button.dataset.subuserDelete || "");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/account/users", {
+      method: "POST",
+      body,
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await response.json();
+    if (status) {
+      status.textContent = data.success ? "Sub-user removed." : (data.message || "Sub-user could not be removed.");
+      status.className = data.success ? "form-status ok" : "form-status bad";
+    }
+    if (data.success) {
+      renderSubUsers(data);
+      if (data.account) storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
+    }
+  } catch {
+    if (status) {
+      status.textContent = "Sub-user could not be removed from this browser session.";
+      status.className = "form-status bad";
+    }
+  } finally {
+    button.disabled = false;
+  }
 });
 
 function renderStaffAdmin(admin) {
