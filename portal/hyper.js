@@ -1531,7 +1531,10 @@ document.querySelectorAll("[data-mfa-setup]").forEach((button) => {
       }
       if (!data.success) return;
       if (panel) panel.hidden = false;
-      if (qr) qr.src = data.qr_url || "";
+      if (qr) {
+        qr.hidden = !data.qr_url;
+        qr.src = data.qr_url || "";
+      }
       if (secret) secret.textContent = data.secret || "";
       if (data.account) {
         storeAccount(data.account, data.mode || data.account.access_mode || "view_only");
@@ -1707,7 +1710,10 @@ document.querySelectorAll("[data-staff-mfa-setup]").forEach((button) => {
       document.querySelector("[data-staff-mfa-panel]")?.removeAttribute("hidden");
       const qr = document.querySelector("[data-staff-mfa-qr]");
       const secret = document.querySelector("[data-staff-mfa-secret]");
-      if (qr) qr.src = data.qr_url || "";
+      if (qr) {
+        qr.hidden = !data.qr_url;
+        qr.src = data.qr_url || "";
+      }
       if (secret) secret.textContent = data.secret || "";
       if (data.admin) {
         localStorage.setItem("visorcore-staff-admin", JSON.stringify(data.admin));
