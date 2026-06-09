@@ -611,14 +611,27 @@ async function pollVmConsoleFrame(sessionId) {
   if (!sessionId) return;
   consoleFramePollCount += 1;
   try {
-    const response = await fetch(`/api/console-frame?session_id=${encodeURIComponent(sessionId)}`, {
+    const params = new URLSearchParams({ session_id: sessionId });
+    if (activeConsoleVm?.host_id) params.set("host_id", activeConsoleVm.host_id);
+    if (activeConsoleVm?.name) params.set("vm_name", activeConsoleVm.name);
+    const response = await fetch(`/api/console-frame?${params.toString()}`, {
       credentials: "same-origin",
       headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
     });
     const data = await parseJsonResponse(response);
-    if (data.success) renderVmConsoleFrame(data.session);
+    if (data.success) {
+      if (data.session?.id && data.session.id !== activeConsoleSessionId && data.session?.frame?.data) {
+        activeConsoleSessionId = data.session.id;
+      }
+      renderVmConsoleFrame(data.session);
+    } else if (consoleFramePollCount > 4) {
+      renderVmConsoleState("loading", "Console relay syncing", data.message || "Waiting for the newest frame from the host agent.");
+    }
   } catch (error) {
     console.error("VisorCore console frame poll failed", error);
+    if (consoleFramePollCount > 4) {
+      renderVmConsoleState("loading", "Console relay syncing", "The browser is retrying the console frame stream.");
+    }
   }
 }
 
