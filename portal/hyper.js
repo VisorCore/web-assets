@@ -422,11 +422,14 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.8.0";
+let latestAgentVersion = "0.9.0";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
 let selectedStaffTicketId = "";
+let activeConsoleSessionId = "";
+let activeConsoleVm = null;
+let consoleFrameTimer = null;
 
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
@@ -524,7 +527,7 @@ function renderVmConsoleState(type, title, message, features = []) {
 }
 
 async function requestVmConsoleSession(vm) {
-  renderVmConsoleState("loading", "Preparing secure console", "Requesting a per-session gateway token for this VM.");
+  renderVmConsoleState("loading", "Starting secure console", "Asking the installed Hyper Agent to start the outbound frame relay for this VM.");
   try {
     const body = new FormData();
     body.set("host_id", vm.host_id || "");
@@ -538,18 +541,88 @@ async function requestVmConsoleSession(vm) {
     });
     const data = await parseJsonResponse(response);
     if (!data.success) {
-      renderVmConsoleState("error", "Console gateway not ready", data.message || "The console gateway could not create a session for this VM.", data.features || []);
+      renderVmConsoleState("error", "Console relay could not start", data.message || "The Hyper Agent could not create a console session for this VM.", data.features || []);
       return;
     }
-    renderVmConsoleState("ready", "Console session reserved", data.message || "Gateway session is ready.", data.features || []);
+    activeConsoleSessionId = data.session_id || "";
+    renderVmConsoleState("ready", "Console session starting", data.message || "Waiting for the first live frame from the host.", data.features || []);
+    startVmConsoleFrameStream(activeConsoleSessionId);
   } catch (error) {
     console.error("VisorCore console session failed", error);
-    renderVmConsoleState("error", "Console gateway unavailable", "The browser could not reach the console session endpoint.");
+    renderVmConsoleState("error", "Console relay unavailable", "The browser could not reach the console session endpoint.");
   }
+}
+
+function stopVmConsoleFrameStream() {
+  if (consoleFrameTimer) window.clearInterval(consoleFrameTimer);
+  consoleFrameTimer = null;
+  activeConsoleSessionId = "";
+  activeConsoleVm = null;
+}
+
+function renderVmConsoleFrame(session) {
+  const screen = vmConsoleModal?.querySelector("[data-vm-console-screen]");
+  if (!screen || !session) return;
+  const frame = session.frame || {};
+  if (!frame.data) {
+    const message = session.message || "Waiting for the first frame from the installed Hyper Agent.";
+    renderVmConsoleState(session.status === "waiting" ? "loading" : "ready", "Console relay warming up", message);
+    return;
+  }
+  screen.className = "console-screen is-streaming";
+  screen.innerHTML = `
+    <img class="console-frame-image" src="data:${escapeHtml(frame.mime || "image/jpeg")};base64,${frame.data}" alt="${escapeHtml(session.vm_name || "VM")} console frame">
+    <div class="console-stream-badge">
+      <span></span>
+      <strong>Live relay</strong>
+      <small>${escapeHtml(frame.captured_at ? new Date(frame.captured_at).toLocaleTimeString() : "streaming")}</small>
+    </div>
+  `;
+}
+
+async function pollVmConsoleFrame(sessionId) {
+  if (!sessionId) return;
+  try {
+    const response = await fetch(`/api/console-frame?session_id=${encodeURIComponent(sessionId)}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await parseJsonResponse(response);
+    if (data.success) renderVmConsoleFrame(data.session);
+  } catch (error) {
+    console.error("VisorCore console frame poll failed", error);
+  }
+}
+
+function startVmConsoleFrameStream(sessionId) {
+  if (!sessionId) return;
+  if (consoleFrameTimer) window.clearInterval(consoleFrameTimer);
+  pollVmConsoleFrame(sessionId);
+  consoleFrameTimer = window.setInterval(() => pollVmConsoleFrame(sessionId), 1000);
+}
+
+async function sendVmConsoleCommand(action, options = {}) {
+  if (!activeConsoleVm) return;
+  const body = new FormData();
+  body.set("host_id", activeConsoleVm.host_id || "");
+  body.set("command", action);
+  body.set("target_type", "console");
+  body.set("target_name", activeConsoleVm.name || "");
+  body.set("target_id", activeConsoleVm.id || "");
+  body.set("options", JSON.stringify(options));
+  const response = await fetch("/api/commands", {
+    method: "POST",
+    body,
+    credentials: "same-origin",
+    headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+  });
+  return parseJsonResponse(response);
 }
 
 function openVmConsole(vm) {
   if (!vmConsoleModal || !vm) return;
+  stopVmConsoleFrameStream();
+  activeConsoleVm = vm;
   const title = vmConsoleModal.querySelector("[data-vm-console-title]");
   const host = vmConsoleModal.querySelector("[data-vm-console-host]");
   if (title) title.textContent = `${vm.name || "VM"} Console`;
@@ -562,6 +635,7 @@ function openVmConsole(vm) {
 }
 function closeVmConsole() {
   if (!vmConsoleModal) return;
+  stopVmConsoleFrameStream();
   vmConsoleModal.classList.remove("is-open");
   vmConsoleModal.setAttribute("aria-hidden", "true");
   document.body.style.overflow = "";
@@ -569,6 +643,44 @@ function closeVmConsole() {
 document.querySelectorAll("[data-vm-console-close]").forEach((button) => button.addEventListener("click", closeVmConsole));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeVmConsole();
+});
+
+document.addEventListener("click", async (event) => {
+  const sendText = event.target.closest("[data-vm-console-send-text]");
+  const ctrlAltDel = event.target.closest("[data-vm-console-ctrl-alt-del]");
+  if (!sendText && !ctrlAltDel) return;
+  const status = vmConsoleModal?.querySelector("[data-vm-console-input-status]");
+  const input = vmConsoleModal?.querySelector("[data-vm-console-text]");
+  const button = sendText || ctrlAltDel;
+  button.disabled = true;
+  if (status) {
+    status.textContent = "Sending to VM...";
+    status.className = "copy-status";
+  }
+  try {
+    const data = sendText
+      ? await sendVmConsoleCommand("console.type_text", { text: input?.value || "" })
+      : await sendVmConsoleCommand("console.ctrl_alt_del", {});
+    if (status) {
+      status.textContent = data?.success ? "Sent to the VM console." : (data?.message || "Console command failed.");
+      status.className = data?.success ? "copy-status good" : "copy-status bad";
+    }
+    if (sendText && data?.success && input) input.value = "";
+  } catch {
+    if (status) {
+      status.textContent = "Console command could not be sent.";
+      status.className = "copy-status bad";
+    }
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  const input = event.target.closest?.("[data-vm-console-text]");
+  if (!input || event.key !== "Enter") return;
+  event.preventDefault();
+  vmConsoleModal?.querySelector("[data-vm-console-send-text]")?.click();
 });
 
 async function copyTextToClipboard(text) {

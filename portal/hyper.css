@@ -1506,6 +1506,74 @@
     linear-gradient(90deg, rgba(99,226,255,.06) 1px, transparent 1px),
     #050b12;
 }
+.console-screen.is-streaming {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  background: #02060b;
+}
+.console-frame-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 340px;
+  object-fit: contain;
+  background: #02060b;
+}
+.console-stream-badge {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(57,217,138,.34);
+  border-radius: 999px;
+  padding: 8px 10px;
+  background: rgba(3,10,18,.78);
+  box-shadow: 0 16px 40px rgba(0,0,0,.28);
+  backdrop-filter: blur(10px);
+}
+.console-stream-badge span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #39d98a;
+  box-shadow: 0 0 16px rgba(57,217,138,.9);
+}
+.console-stream-badge strong,
+.console-stream-badge small {
+  color: #dfffee;
+  font-size: 11px;
+  font-weight: 900;
+}
+.console-control-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(99,226,255,.16);
+  border-radius: 12px;
+  background: rgba(255,255,255,.035);
+}
+.console-control-bar label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+}
+.console-control-bar input {
+  margin-top: 7px;
+  width: 100%;
+  border: 1px solid rgba(99,226,255,.18);
+  border-radius: 10px;
+  background: rgba(0,0,0,.24);
+  color: #fff;
+  padding: 10px 12px;
+}
 .console-screen.is-error {
   background:
     radial-gradient(circle at 50% 42%, rgba(255,92,122,.18), transparent 28%),
@@ -2045,6 +2113,10 @@
   }
   .account-alert {
     grid-template-columns: 1fr;
+  }
+  .console-control-bar {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
   .staff-admin-topbar,
   .portal-appbar {
