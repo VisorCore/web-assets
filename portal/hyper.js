@@ -422,7 +422,7 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.9.0";
+let latestAgentVersion = "0.9.1";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
@@ -430,6 +430,7 @@ let selectedStaffTicketId = "";
 let activeConsoleSessionId = "";
 let activeConsoleVm = null;
 let consoleFrameTimer = null;
+let consoleFramePollCount = 0;
 
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
@@ -556,6 +557,7 @@ async function requestVmConsoleSession(vm) {
 function stopVmConsoleFrameStream() {
   if (consoleFrameTimer) window.clearInterval(consoleFrameTimer);
   consoleFrameTimer = null;
+  consoleFramePollCount = 0;
   activeConsoleSessionId = "";
   activeConsoleVm = null;
 }
@@ -565,7 +567,10 @@ function renderVmConsoleFrame(session) {
   if (!screen || !session) return;
   const frame = session.frame || {};
   if (!frame.data) {
-    const message = session.message || "Waiting for the first frame from the installed Hyper Agent.";
+    const fallback = consoleFramePollCount > 10
+      ? `No frame has been posted yet. Confirm this host is running Hyper Agent ${latestAgentVersion}, then try Update Agent from the Hosts tab.`
+      : "Waiting for the first frame from the installed Hyper Agent.";
+    const message = session.message || fallback;
     renderVmConsoleState(session.status === "waiting" ? "loading" : "ready", "Console relay warming up", message);
     return;
   }
@@ -582,6 +587,7 @@ function renderVmConsoleFrame(session) {
 
 async function pollVmConsoleFrame(sessionId) {
   if (!sessionId) return;
+  consoleFramePollCount += 1;
   try {
     const response = await fetch(`/api/console-frame?session_id=${encodeURIComponent(sessionId)}`, {
       credentials: "same-origin",
@@ -787,7 +793,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/55d07054d1deabe65524e0a2dc5c04ef530aec51/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/aa9a9bb68689c6eb7eb7b788f7c125b87bc14821/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1028,7 +1034,7 @@ function agentUpdateAvailable(host) {
 function manualAgentUpdateCommand() {
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/55d07054d1deabe65524e0a2dc5c04ef530aec51/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/aa9a9bb68689c6eb7eb7b788f7c125b87bc14821/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
