@@ -610,7 +610,7 @@ function renderAccountUi(account) {
     profilePill.textContent = suspended ? "Suspended" : (verified ? "Verified" : "Pending Email");
     profilePill.className = suspended ? "pill bad" : (verified ? "pill good" : "pill warn");
   }
-  const workspaceCode = account.workspace_code || "vc_demo_workspace";
+  const workspaceCode = account.workspace_code || "your_workspace_code";
   const installCommand = document.querySelector("[data-host-install-command]");
   if (installCommand) {
     installCommand.textContent = [
@@ -833,6 +833,88 @@ function formatSeconds(value) {
   return `${minutes}m`;
 }
 
+function clampPercent(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
+}
+
+function formatCapacity(gb) {
+  const value = Number(gb || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 GB";
+  if (value >= 1024) {
+    const tb = value / 1024;
+    return `${tb >= 10 ? Math.round(tb) : tb.toFixed(1)} TB`;
+  }
+  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} GB`;
+}
+
+function formatMbps(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0 Mbps";
+  if (number >= 1000) {
+    const gbps = number / 1000;
+    return `${gbps >= 10 ? Math.round(gbps) : gbps.toFixed(1)} Gbps`;
+  }
+  return `${number >= 10 ? Math.round(number) : number.toFixed(1)} Mbps`;
+}
+
+function sumInventoryMetric(hosts, reader) {
+  return hosts.reduce((total, host) => {
+    const value = Number(reader(host.inventory || {}, host) || 0);
+    return Number.isFinite(value) ? total + value : total;
+  }, 0);
+}
+
+function aggregateHostResources(hosts) {
+  const memoryGb = sumInventoryMetric(hosts, (inventory) => inventory.host?.total_memory_gb);
+  const memoryAssignedGb = sumInventoryMetric(hosts, (inventory) => (
+    inventoryArray({ inventory }, "vms").reduce((total, vm) => total + (Number(vm.memory_assigned_mb || 0) / 1024), 0)
+  ));
+  const cpuCores = sumInventoryMetric(hosts, (inventory) => inventory.host?.logical_processor_count || inventory.host?.processor_count);
+  const cpuLoadTotal = sumInventoryMetric(hosts, (inventory) => inventory.host?.cpu_load_percent);
+  const cpuLoadSamples = hosts.filter((host) => Number(host.inventory?.host?.cpu_load_percent || 0) > 0).length;
+  const storageTotalGb = sumInventoryMetric(hosts, (inventory) => inventory.storage?.total_gb);
+  const storageFreeGb = sumInventoryMetric(hosts, (inventory) => inventory.storage?.free_gb);
+  const networkRxMbps = sumInventoryMetric(hosts, (inventory) => inventory.network?.rx_mbps);
+  const networkTxMbps = sumInventoryMetric(hosts, (inventory) => inventory.network?.tx_mbps);
+  return {
+    cpuCores,
+    cpuLoadPercent: cpuLoadSamples ? cpuLoadTotal / cpuLoadSamples : 0,
+    memoryGb,
+    memoryAssignedGb,
+    storageTotalGb,
+    storageFreeGb,
+    storageUsedGb: Math.max(0, storageTotalGb - storageFreeGb),
+    networkRxMbps,
+    networkTxMbps,
+  };
+}
+
+function updateUtilizationMeter(selector, labelSelector, percent, label = "") {
+  const meter = document.querySelector(selector);
+  const labelEl = document.querySelector(labelSelector);
+  const clamped = clampPercent(percent);
+  if (meter) meter.style.width = `${clamped}%`;
+  if (labelEl) labelEl.textContent = label || `${clamped}%`;
+}
+
+function renderDashboardEvents(events) {
+  const container = document.querySelector("[data-dashboard-events]");
+  const empty = document.querySelector("[data-dashboard-events-empty]");
+  if (!container) return;
+  const liveEvents = Array.isArray(events) ? events.slice(0, 5) : [];
+  container.innerHTML = liveEvents.map((event) => `
+    <div class="dashboard-event">
+      <b>${escapeHtml(event.level || "Info")}</b>
+      <span>${escapeHtml(event.host || "Host")}</span>
+      <small>${escapeHtml(`${event.id || ""} ${String(event.message || "").slice(0, 120)}`.trim())}</small>
+    </div>
+  `).join("");
+  container.style.display = liveEvents.length ? "grid" : "none";
+  if (empty) empty.style.display = liveEvents.length ? "none" : "block";
+}
+
 function vmStatePill(state) {
   const value = String(state || "Unknown");
   const lower = value.toLowerCase();
@@ -932,16 +1014,15 @@ function commandButtonsForDisk(disk) {
 function renderOverviewInventory(hosts) {
   const approved = approvedInventoryHosts(hosts);
   const pending = hosts.filter((host) => (host.status || "pending_approval") === "pending_approval").length;
-  const vmTotal = inventoryCount(approved, "vm_count", "vms");
-  const runningTotal = inventoryCount(approved, "running_vm_count");
-  const switchTotal = inventoryCount(approved, "switch_count", "switches");
-  const checkpointTotal = inventoryCount(approved, "checkpoint_count", "checkpoints");
+  const resources = aggregateHostResources(approved);
+  const networkTotal = resources.networkRxMbps + resources.networkTxMbps;
   const kpis = document.querySelectorAll('[data-view-panel="overview"] .portal-kpis > div');
   const values = [
     ["Hosts", String(approved.length), pending ? `${pending} awaiting approval` : "Connected and reporting"],
-    ["Virtual Machines", String(vmTotal), `${runningTotal} running`],
-    ["Virtual Switches", String(switchTotal), "Discovered from host agents"],
-    ["Checkpoints", String(checkpointTotal), "Across connected hosts"],
+    ["CPU Cores", String(Math.round(resources.cpuCores)), "Logical cores across hosts"],
+    ["Memory", formatCapacity(resources.memoryGb), `${formatCapacity(resources.memoryAssignedGb)} assigned to VMs`],
+    ["Storage", formatCapacity(resources.storageTotalGb), `${formatCapacity(resources.storageFreeGb)} free`],
+    ["Network", formatMbps(networkTotal), `${formatMbps(resources.networkRxMbps)} down / ${formatMbps(resources.networkTxMbps)} up`],
   ];
   kpis.forEach((card, index) => {
     const value = values[index];
@@ -953,6 +1034,18 @@ function renderOverviewInventory(hosts) {
     if (strong) strong.textContent = value[1];
     if (small) small.textContent = value[2];
   });
+  updateUtilizationMeter("[data-util-cpu]", "[data-util-cpu-label]", resources.cpuLoadPercent);
+  updateUtilizationMeter(
+    "[data-util-memory]",
+    "[data-util-memory-label]",
+    resources.memoryGb > 0 ? (resources.memoryAssignedGb / resources.memoryGb) * 100 : 0,
+  );
+  updateUtilizationMeter(
+    "[data-util-storage]",
+    "[data-util-storage-label]",
+    resources.storageTotalGb > 0 ? (resources.storageUsedGb / resources.storageTotalGb) * 100 : 0,
+  );
+  renderDashboardEvents(flattenInventory(approved, "events"));
   const overviewEmpty = document.querySelector('[data-view-panel="overview"] [data-empty-state]');
   if (overviewEmpty) overviewEmpty.style.display = approved.length ? "none" : "block";
 }
@@ -1374,7 +1467,7 @@ document.addEventListener("click", async (event) => {
       setCommandStatus("bad", "Action blocked", data.message || "Command could not be sent.");
       return;
     }
-    setCommandStatus("good", "Action accepted", data.message || "The host agent is picking this up now.");
+    setCommandStatus("good", "Action sent", data.message || "The host agent is picking this up now.");
     window.setTimeout(loadHostRequests, 2200);
   } catch (error) {
     console.error("VisorCore command queue failed", error);
