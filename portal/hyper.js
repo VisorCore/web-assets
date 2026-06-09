@@ -1404,6 +1404,7 @@ function renderHostRequests(data) {
   const approved = hosts.filter((host) => (host.status || "") === "approved");
   const removing = hosts.filter((host) => ["deletion_requested", "delete_command_sent"].includes(host.status || ""));
   const updateHosts = approved.filter((host) => agentUpdateAvailable(host));
+  const manualUpdateRequired = updateHosts.some((host) => compareVersions(agentVersionForHost(host), "0.8.0") < 0);
   connectedHostsCount = approved.length;
   if (count) {
     count.textContent = `${pending.length} pending`;
@@ -1437,12 +1438,12 @@ function renderHostRequests(data) {
   const updateBannerText = document.querySelector("[data-agent-update-banner-text]");
   if (updateBanner) updateBanner.hidden = updateHosts.length === 0;
   if (updateBannerText && updateHosts.length) {
-    updateBannerText.textContent = `${updateHosts.length} host${updateHosts.length === 1 ? "" : "s"} can update to Hyper Agent ${latestAgentVersion}.`;
+    updateBannerText.textContent = `${updateHosts.length} host${updateHosts.length === 1 ? "" : "s"} can update to Hyper Agent ${latestAgentVersion}.${manualUpdateRequired ? " Hosts below 0.8.0 may need the manual update once before automatic updates are available." : ""}`;
   }
   const manualPanel = document.querySelector("[data-manual-agent-update]");
   const manualCommand = document.querySelector("[data-manual-agent-update-command]");
   if (manualCommand) manualCommand.textContent = manualAgentUpdateCommand();
-  if (manualPanel && updateHosts.length === 0) manualPanel.hidden = true;
+  if (manualPanel) manualPanel.hidden = updateHosts.length === 0 || !manualUpdateRequired;
   if (connectedList) {
     connectedList.innerHTML = "";
     approved.concat(removing).forEach((host) => {
