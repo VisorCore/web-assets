@@ -1105,9 +1105,22 @@
   justify-content: flex-start;
 }
 .action-bar button {
-  border-color: var(--line);
-  background: rgba(255,255,255,.045);
-  border-radius: var(--radius);
+  border-color: rgba(99,226,255,.2);
+  background: linear-gradient(135deg, rgba(255,255,255,.075), rgba(255,255,255,.035));
+  border-radius: 9px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 10px 24px rgba(0,0,0,.16);
+}
+.action-bar button[data-command-intent="danger"],
+.row-actions button[data-command-intent="danger"] {
+  border-color: rgba(255,92,122,.38);
+  background: linear-gradient(135deg, rgba(255,92,122,.14), rgba(255,255,255,.035));
+  color: #ffb3bf;
+}
+.action-bar button[data-command-intent="primary"],
+.row-actions button[data-command-intent="primary"] {
+  border-color: rgba(57,217,138,.35);
+  background: linear-gradient(135deg, rgba(57,217,138,.14), rgba(99,226,255,.06));
+  color: #b9ffda;
 }
 .vm-command-bar {
   align-items: stretch;
@@ -1127,6 +1140,47 @@
   font-size: 12px;
   font-weight: 950;
   background: rgba(0,0,0,.18);
+}
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+.command-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid rgba(99,226,255,.12);
+  border-radius: 10px;
+  background: rgba(0,0,0,.13);
+}
+.command-group-primary {
+  border-color: rgba(99,226,255,.24);
+  background: rgba(16,168,255,.08);
+}
+.command-group-danger {
+  border-color: rgba(255,92,122,.2);
+  background: rgba(255,92,122,.055);
+}
+.row-actions button {
+  border: 1px solid rgba(99,226,255,.18);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
+  color: var(--silver);
+  padding: 7px 9px;
+  font-size: 12px;
+  font-weight: 900;
+  cursor: pointer;
+  transition: transform .16s ease, border-color .16s ease, color .16s ease, background .16s ease;
+}
+.row-actions button:hover,
+.action-bar button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(99,226,255,.42);
+  color: #fff;
 }
 
 .data-table {
@@ -1276,6 +1330,42 @@
   color: var(--muted);
   font-weight: 750;
 }
+.console-screen.is-ready {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(57,217,138,.22), transparent 26%),
+    linear-gradient(rgba(99,226,255,.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99,226,255,.06) 1px, transparent 1px),
+    #050b12;
+}
+.console-screen.is-error {
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255,92,122,.18), transparent 28%),
+    linear-gradient(rgba(99,226,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99,226,255,.05) 1px, transparent 1px),
+    #050b12;
+}
+.console-session-features,
+.console-feature-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+}
+.console-session-features span,
+.console-feature-grid span {
+  border: 1px solid rgba(99,226,255,.18);
+  border-radius: 999px;
+  background: rgba(255,255,255,.045);
+  color: var(--silver);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 850;
+}
+.console-feature-grid {
+  justify-content: flex-start;
+  margin: 14px 0 0;
+}
 .console-reticle {
   position: absolute;
   width: 160px;
@@ -1359,12 +1449,52 @@
 .command-status.bad .status-orb { background: var(--bad); box-shadow: 0 0 0 6px rgba(255,92,122,.1), 0 0 18px rgba(255,92,122,.45); }
 .command-status.good strong { color: var(--good); }
 .command-status.bad strong { color: var(--bad); }
-.row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+
+.danger-confirm-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  z-index: 92;
 }
-.row-actions button,
+.danger-confirm-modal.is-open {
+  display: block;
+}
+.danger-confirm-panel {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: min(520px, calc(100vw - 28px));
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255,92,122,.34);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255,92,122,.22), transparent 34%),
+    linear-gradient(145deg, rgba(12,17,28,.98), rgba(22,10,18,.96));
+  box-shadow: 0 34px 90px rgba(0,0,0,.44), 0 0 0 1px rgba(255,255,255,.04) inset;
+  padding: 24px;
+}
+.danger-confirm-panel h2 {
+  margin: 0 0 10px;
+  color: #fff;
+}
+.danger-confirm-panel p:not(.eyebrow) {
+  color: #ffd8df;
+  font-weight: 800;
+  line-height: 1.5;
+}
+.danger-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+.btn-danger {
+  border-color: rgba(255,92,122,.5);
+  background: linear-gradient(135deg, #ff335f, #b80f32);
+  color: #fff;
+  box-shadow: 0 18px 42px rgba(255,51,95,.24);
+}
 .network-actions button {
   border: 1px solid rgba(99,226,255,.24);
   border-radius: 7px;
@@ -1374,11 +1504,6 @@
   font-size: 11px;
   font-weight: 900;
   cursor: pointer;
-}
-.row-actions button.danger {
-  border-color: rgba(255,92,122,.36);
-  background: rgba(255,92,122,.08);
-  color: #ff9aac;
 }
 .vm-select-button {
   width: 100%;

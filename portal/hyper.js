@@ -418,6 +418,7 @@ let billingInvoicesLoading = false;
 let hostRequestsLoading = false;
 let lastPendingHostCount = 0;
 let hostRequestPollTimer = null;
+let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
@@ -425,7 +426,20 @@ let latestVmInventory = [];
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
   loadHostRequests();
-  hostRequestPollTimer = window.setInterval(loadHostRequests, 7000);
+  hostRequestPollTimer = window.setInterval(loadHostRequests, 2000);
+}
+
+function startLiveRefreshBurst(durationMs = 18000) {
+  if (!getStoredAccount()) return;
+  if (liveRefreshBurstTimer) window.clearInterval(liveRefreshBurstTimer);
+  loadHostRequests();
+  liveRefreshBurstTimer = window.setInterval(loadHostRequests, 700);
+  window.setTimeout(() => {
+    if (liveRefreshBurstTimer) {
+      window.clearInterval(liveRefreshBurstTimer);
+      liveRefreshBurstTimer = null;
+    }
+  }, durationMs);
 }
 
 function activatePortalView(shell, view) {
@@ -490,15 +504,55 @@ document.addEventListener("keydown", (event) => {
 });
 
 const vmConsoleModal = document.querySelector("[data-vm-console-modal]");
+function renderVmConsoleState(type, title, message, features = []) {
+  const screen = vmConsoleModal?.querySelector("[data-vm-console-screen]");
+  if (!screen) return;
+  screen.classList.toggle("is-ready", type === "ready");
+  screen.classList.toggle("is-error", type === "error");
+  screen.innerHTML = `
+    <div class="console-reticle"></div>
+    <strong>${escapeHtml(title)}</strong>
+    <p>${escapeHtml(message)}</p>
+    ${features.length ? `<div class="console-session-features">${features.map((feature) => `<span>${escapeHtml(feature)}</span>`).join("")}</div>` : ""}
+  `;
+}
+
+async function requestVmConsoleSession(vm) {
+  renderVmConsoleState("loading", "Preparing secure console", "Requesting a per-session gateway token for this VM.");
+  try {
+    const body = new FormData();
+    body.set("host_id", vm.host_id || "");
+    body.set("vm_name", vm.name || "");
+    body.set("vm_id", vm.id || "");
+    const response = await fetch("/api/console/session", {
+      method: "POST",
+      body,
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
+    });
+    const data = await parseJsonResponse(response);
+    if (!data.success) {
+      renderVmConsoleState("error", "Console gateway not ready", data.message || "The console gateway could not create a session for this VM.", data.features || []);
+      return;
+    }
+    renderVmConsoleState("ready", "Console session reserved", data.message || "Gateway session is ready.", data.features || []);
+  } catch (error) {
+    console.error("VisorCore console session failed", error);
+    renderVmConsoleState("error", "Console gateway unavailable", "The browser could not reach the console session endpoint.");
+  }
+}
+
 function openVmConsole(vm) {
   if (!vmConsoleModal || !vm) return;
   const title = vmConsoleModal.querySelector("[data-vm-console-title]");
   const host = vmConsoleModal.querySelector("[data-vm-console-host]");
   if (title) title.textContent = `${vm.name || "VM"} Console`;
   if (host) host.textContent = `${vm.host || "Hyper-V Host"} - ${vm.state || "Unknown"}`;
+  renderVmConsoleState("loading", "Gateway session initializing", "VisorCore is checking whether a low-latency console gateway is available for this host.");
   vmConsoleModal.classList.add("is-open");
   vmConsoleModal.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  requestVmConsoleSession(vm);
 }
 function closeVmConsole() {
   if (!vmConsoleModal) return;
@@ -972,23 +1026,15 @@ function commandButtonsForVm(vm) {
   const hostId = escapeHtml(vm.host_id || "");
   const name = escapeHtml(vm.name || "");
   const state = String(vm.state || "").toLowerCase();
+  const commandButton = (action, label, intent = "") => `<button type="button" ${intent ? `data-command-intent="${intent}"` : ""} data-queue-command="${action}" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">${label}</button>`;
   const primary = state === "running"
-    ? `<button type="button" class="danger" data-queue-command="vm.stop" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Stop</button>`
-    : `<button type="button" data-queue-command="vm.start" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Start</button>`;
+    ? `${commandButton("vm.restart", "Restart")}${commandButton("vm.checkpoint", "Checkpoint")}`
+    : commandButton("vm.start", "Start", "primary");
   return `<div class="row-actions">
-    ${primary}
-    <button type="button" data-queue-command="vm.shutdown" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Shutdown</button>
-    <button type="button" class="danger" data-queue-command="vm.turn_off" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Power Off</button>
-    <button type="button" data-queue-command="vm.restart" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Restart</button>
-    <button type="button" data-queue-command="vm.checkpoint" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Checkpoint</button>
-    <button type="button" data-queue-command="vm.pause" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Pause</button>
-    <button type="button" data-queue-command="vm.resume" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Resume</button>
-    <button type="button" data-queue-command="vm.save" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Save</button>
-    <button type="button" data-queue-command="vm.set_cpu" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">CPU</button>
-    <button type="button" data-queue-command="vm.set_memory" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">RAM</button>
-    <button type="button" data-queue-command="vm.set_notes" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Notes</button>
-    <button type="button" data-queue-command="vm.rename" data-target-type="vm" data-host-id="${hostId}" data-target-name="${name}">Rename</button>
-    <button type="button" data-open-vm-console data-vm-key="${escapeHtml(vmKey(vm))}">Console</button>
+    <span class="command-group command-group-primary">${primary}<button type="button" data-open-vm-console data-vm-key="${escapeHtml(vmKey(vm))}">Console</button></span>
+    <span class="command-group">${commandButton("vm.pause", "Pause")}${commandButton("vm.resume", "Resume")}${commandButton("vm.save", "Save")}</span>
+    <span class="command-group">${commandButton("vm.set_cpu", "CPU")}${commandButton("vm.set_memory", "RAM")}${commandButton("vm.set_notes", "Notes")}${commandButton("vm.rename", "Rename")}</span>
+    <span class="command-group command-group-danger">${commandButton("vm.shutdown", "Graceful Shutdown", "danger")}${commandButton("vm.turn_off", "Hard Power Off", "danger")}</span>
   </div>`;
 }
 
@@ -1215,7 +1261,7 @@ function renderHostRequests(data) {
           <div>
             <strong>${escapeHtml(host.computer_name || "Unnamed Hyper-V Host")}</strong>
             <span>${escapeHtml(host.region || "us-central")} - ${deleting ? "Removal requested" : (online ? "Agent online" : "Agent approved, waiting for check-in")}</span>
-            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task syncs inventory every 60 seconds and listens for commands every 2 seconds after approval.")}</small>
+            <small>${deleting ? "VisorCore asked the agent to unregister the scheduled task. If this does not clear, use Hard Delete to remove the portal record." : (online ? `${vmCount} VMs discovered - ${switchCount} switches discovered - Last check-in ${escapeHtml(host.last_checkin_at ? new Date(host.last_checkin_at).toLocaleString() : "just now")}` : "The background agent task syncs inventory every 10 seconds and listens for commands every 1 second after approval.")}</small>
           </div>
           <div class="connected-host-meta">
             ${deleting ? pill("Removal Requested", "warn") : (online ? pill("Online", "good") : hostStatusPill("approved"))}
@@ -1286,6 +1332,33 @@ async function parseJsonResponse(response) {
   }
 }
 
+function showDangerConfirm(title, message, confirmLabel = "Confirm") {
+  const modal = document.querySelector("[data-danger-confirm-modal]");
+  if (!modal) return Promise.resolve(window.confirm(message));
+  const titleEl = modal.querySelector("[data-danger-confirm-title]");
+  const messageEl = modal.querySelector("[data-danger-confirm-message]");
+  const accept = modal.querySelector("[data-danger-confirm-accept]");
+  const cancelButtons = modal.querySelectorAll("[data-danger-confirm-cancel]");
+  if (titleEl) titleEl.textContent = title;
+  if (messageEl) messageEl.textContent = message;
+  if (accept) accept.textContent = confirmLabel;
+  modal.classList.add("is-open");
+  modal.setAttribute("aria-hidden", "false");
+  return new Promise((resolve) => {
+    const cleanup = (value) => {
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      accept?.removeEventListener("click", onAccept);
+      cancelButtons.forEach((button) => button.removeEventListener("click", onCancel));
+      resolve(value);
+    };
+    const onAccept = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    accept?.addEventListener("click", onAccept);
+    cancelButtons.forEach((button) => button.addEventListener("click", onCancel));
+  });
+}
+
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-host-action]");
   if (!button) return;
@@ -1346,16 +1419,23 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-function commandOptionsForButton(button) {
+async function commandOptionsForButton(button) {
   const action = button.dataset.queueCommand;
   const targetName = button.dataset.targetName || "";
   const options = {};
-  if (["vm.stop", "vm.restart", "vm.shutdown", "vm.turn_off", "vm.pause", "vm.resume", "vm.save"].includes(action)) {
+  if (["vm.shutdown", "vm.turn_off"].includes(action)) {
+    const isPowerOff = action === "vm.turn_off";
+    const confirmed = await showDangerConfirm(
+      isPowerOff ? "Hard power off this VM?" : "Gracefully shut down this VM?",
+      isPowerOff
+        ? `Hard Power Off immediately cuts power to "${targetName}". Unsaved guest data can be lost.`
+        : `Graceful Shutdown asks the guest OS inside "${targetName}" to shut down cleanly. If guest tools are not responding, it may fail.`,
+      isPowerOff ? "Hard Power Off" : "Graceful Shutdown",
+    );
+    if (!confirmed) return null;
+  } else if (["vm.restart", "vm.pause", "vm.resume", "vm.save"].includes(action)) {
     const labels = {
-      "vm.stop": "Stop",
       "vm.restart": "Restart",
-      "vm.shutdown": "request guest shutdown for",
-      "vm.turn_off": "power off",
       "vm.pause": "Pause",
       "vm.resume": "Resume",
       "vm.save": "Save",
@@ -1444,7 +1524,7 @@ document.addEventListener("click", (event) => {
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-queue-command]");
   if (!button) return;
-  const options = commandOptionsForButton(button);
+  const options = await commandOptionsForButton(button);
   if (options === null) return;
   button.disabled = true;
   setCommandStatus("active", "Sending action", `${button.textContent.trim() || "Command"} is being handed to the host agent.`);
@@ -1467,8 +1547,9 @@ document.addEventListener("click", async (event) => {
       setCommandStatus("bad", "Action blocked", data.message || "Command could not be sent.");
       return;
     }
+    renderRecentCommandStatus(data.commands || []);
     setCommandStatus("good", "Action sent", data.message || "The host agent is picking this up now.");
-    window.setTimeout(loadHostRequests, 2200);
+    startLiveRefreshBurst();
   } catch (error) {
     console.error("VisorCore command queue failed", error);
     setCommandStatus("bad", "Action failed", "Command could not be sent from this browser session.");
