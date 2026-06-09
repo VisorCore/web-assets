@@ -422,7 +422,7 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.9.1";
+let latestAgentVersion = "0.9.2";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
@@ -793,7 +793,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/aa9a9bb68689c6eb7eb7b788f7c125b87bc14821/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7fa50629e99753af0b2ccc41fc173577e2ad469a/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1034,7 +1034,7 @@ function agentUpdateAvailable(host) {
 function manualAgentUpdateCommand() {
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/aa9a9bb68689c6eb7eb7b788f7c125b87bc14821/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7fa50629e99753af0b2ccc41fc173577e2ad469a/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
@@ -1524,7 +1524,7 @@ function renderHostRequests(data) {
   const approved = hosts.filter((host) => (host.status || "") === "approved");
   const removing = hosts.filter((host) => ["deletion_requested", "delete_command_sent"].includes(host.status || ""));
   const updateHosts = approved.filter((host) => agentUpdateAvailable(host));
-  const manualUpdateRequired = updateHosts.some((host) => compareVersions(agentVersionForHost(host), "0.8.0") < 0);
+  const manualUpdateRequired = updateHosts.length > 0;
   connectedHostsCount = approved.length;
   if (count) {
     count.textContent = `${pending.length} pending`;
@@ -1558,7 +1558,7 @@ function renderHostRequests(data) {
   const updateBannerText = document.querySelector("[data-agent-update-banner-text]");
   if (updateBanner) updateBanner.hidden = updateHosts.length === 0;
   if (updateBannerText && updateHosts.length) {
-    updateBannerText.textContent = `${updateHosts.length} host${updateHosts.length === 1 ? "" : "s"} can update to Hyper Agent ${latestAgentVersion}.${manualUpdateRequired ? " Hosts below 0.8.0 may need the manual update once before automatic updates are available." : ""}`;
+    updateBannerText.textContent = `${updateHosts.length} host${updateHosts.length === 1 ? "" : "s"} can update to Hyper Agent ${latestAgentVersion}. The agent restarts itself after the update, then reports the new version on the next check-in.`;
   }
   const manualPanel = document.querySelector("[data-manual-agent-update]");
   const manualCommand = document.querySelector("[data-manual-agent-update-command]");
@@ -1586,7 +1586,7 @@ function renderHostRequests(data) {
             ${deleting ? pill("Removal Requested", "warn") : (online ? pill("Online", "good") : hostStatusPill("approved"))}
             ${deleting ? pill("Awaiting Agent", "warn") : (online ? pill(`${vmCount} VMs`, vmCount > 0 ? "good" : "warn") : pill("Inventory Pending", "warn"))}
             ${needsUpdate ? pill(`Agent ${latestAgentVersion} Available`, "warn") : pill("Agent Current", "good")}
-            ${needsUpdate && online ? `<button type="button" data-command-intent="primary" data-queue-command="agent.update" data-target-type="host" data-host-id="${id}" data-target-name="${escapeHtml(host.computer_name || "Hyper-V Host")}" data-agent-update-button>Update Agent</button>` : ""}
+            ${needsUpdate && online ? `<button type="button" class="agent-update-action" data-command-intent="primary" data-queue-command="agent.update" data-target-type="host" data-host-id="${id}" data-target-name="${escapeHtml(host.computer_name || "Hyper-V Host")}" data-agent-update-button>Update Agent</button>` : ""}
             <button type="button" class="host-delete-button" data-host-action="${deleting ? "hard_delete" : "delete"}" data-host-id="${id}">${deleting ? "Hard Delete" : "Soft Delete"}</button>
           </div>
         </div>
@@ -2002,7 +2002,15 @@ document.addEventListener("click", async (event) => {
       return;
     }
     renderRecentCommandStatus(data.commands || []);
-    setCommandStatus("good", (button.dataset.queueCommand || "") === "agent.update" ? "Agent update sent" : "Action sent", data.message || "The host agent is picking this up now.");
+    if ((button.dataset.queueCommand || "") === "agent.update") {
+      document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
+      setCommandStatus("active", "Agent update queued", "The host is downloading the latest agent, staging the update, and restarting the background task. The version should change after the next check-in.");
+      window.setTimeout(() => loadHostRequests(), 6000);
+      window.setTimeout(() => loadHostRequests(), 18000);
+      window.setTimeout(() => loadHostRequests(), 45000);
+    } else {
+      setCommandStatus("good", "Action sent", data.message || "The host agent is picking this up now.");
+    }
     startLiveRefreshBurst();
   } catch (error) {
     console.error("VisorCore command queue failed", error);

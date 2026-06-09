@@ -894,6 +894,29 @@
   cursor: pointer;
 }
 
+.agent-update-action,
+.client-actions button[data-staff-host-action="update_agent"] {
+  border: 1px solid rgba(57,217,138,.38);
+  border-radius: 999px;
+  background:
+    linear-gradient(135deg, rgba(57,217,138,.22), rgba(16,168,255,.1)),
+    rgba(255,255,255,.04);
+  color: #d9ffe9;
+  padding: 9px 13px;
+  font-size: 12px;
+  font-weight: 950;
+  cursor: pointer;
+  box-shadow: 0 12px 30px rgba(57,217,138,.12);
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+.agent-update-action:hover,
+.client-actions button[data-staff-host-action="update_agent"]:hover {
+  transform: translateY(-1px);
+  border-color: rgba(57,217,138,.58);
+  box-shadow: 0 16px 36px rgba(57,217,138,.18);
+}
+
 .connected-host-item {
   border-color: rgba(57,217,138,.26);
   background:
