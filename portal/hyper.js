@@ -441,36 +441,55 @@ let hostRequestsLoading = false;
 let lastPendingHostCount = 0;
 let hostRequestPollTimer = null;
 let liveRefreshBurstTimer = null;
+let liveRefreshUntil = 0;
+let latestHostSnapshot = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.11.0";
+let latestAgentVersion = "0.12.0";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
 let selectedStaffTicketId = "";
 let activeConsoleSessionId = "";
 let activeConsoleVm = null;
+let activeConsoleFrame = null;
+let activeConsoleHasFrame = false;
 let consoleFrameTimer = null;
 let consoleFramePollCount = 0;
+
+const LIVE_REFRESH_ACTIVE_STATUSES = new Set(["queued", "sent", "running", "in_progress", "processing"]);
+
+function hostDataHasLiveActivity(data) {
+  if (!data) return false;
+  const hosts = Array.isArray(data.hosts) ? data.hosts : [];
+  if (hosts.some((host) => ["pending_approval", "deletion_requested", "delete_command_sent"].includes(host.status || ""))) return true;
+  const commands = Array.isArray(data.commands) ? data.commands : [];
+  return commands.some((command) => LIVE_REFRESH_ACTIVE_STATUSES.has(String(command.status || "").toLowerCase()));
+}
 
 function startHostRequestPolling() {
   if (hostRequestPollTimer || !getStoredAccount()) return;
   loadHostRequests();
-  hostRequestPollTimer = window.setInterval(loadHostRequests, 2000);
+  hostRequestPollTimer = window.setInterval(loadHostRequests, 1000);
 }
 
-function startLiveRefreshBurst(durationMs = 18000) {
+function stopLiveRefreshBurstIfIdle() {
+  if (!liveRefreshBurstTimer) return;
+  if (Date.now() < liveRefreshUntil || hostDataHasLiveActivity(latestHostSnapshot)) return;
+  window.clearInterval(liveRefreshBurstTimer);
+  liveRefreshBurstTimer = null;
+}
+
+function startLiveRefreshBurst(durationMs = 45000) {
   if (!getStoredAccount()) return;
-  if (liveRefreshBurstTimer) window.clearInterval(liveRefreshBurstTimer);
+  liveRefreshUntil = Math.max(liveRefreshUntil, Date.now() + durationMs);
   loadHostRequests();
-  liveRefreshBurstTimer = window.setInterval(loadHostRequests, 700);
-  window.setTimeout(() => {
-    if (liveRefreshBurstTimer) {
-      window.clearInterval(liveRefreshBurstTimer);
-      liveRefreshBurstTimer = null;
-    }
-  }, durationMs);
+  if (liveRefreshBurstTimer) return;
+  liveRefreshBurstTimer = window.setInterval(async () => {
+    await loadHostRequests();
+    stopLiveRefreshBurstIfIdle();
+  }, 450);
 }
 
 function activatePortalView(shell, view) {
@@ -582,6 +601,8 @@ function stopVmConsoleFrameStream() {
   consoleFramePollCount = 0;
   activeConsoleSessionId = "";
   activeConsoleVm = null;
+  activeConsoleFrame = null;
+  activeConsoleHasFrame = false;
 }
 
 function renderVmConsoleFrame(session) {
@@ -589,6 +610,7 @@ function renderVmConsoleFrame(session) {
   if (!screen || !session) return;
   const frame = session.frame || {};
   if (!frame.data) {
+    if (activeConsoleHasFrame) return;
     const fallback = consoleFramePollCount > 10
       ? `No frame has been posted yet. Confirm this host is running Hyper Agent ${latestAgentVersion}, then try Update Agent from the Hosts tab.`
       : "Waiting for the first frame from the installed Hyper Agent.";
@@ -596,9 +618,15 @@ function renderVmConsoleFrame(session) {
     renderVmConsoleState(session.status === "waiting" ? "loading" : "ready", "Console relay warming up", message);
     return;
   }
+  activeConsoleHasFrame = true;
+  activeConsoleFrame = {
+    width: Number(frame.width || 0),
+    height: Number(frame.height || 0),
+    capturedAt: frame.captured_at || "",
+  };
   screen.className = "console-screen is-streaming";
   screen.innerHTML = `
-    <img class="console-frame-image" src="data:${escapeHtml(frame.mime || "image/jpeg")};base64,${frame.data}" alt="${escapeHtml(session.vm_name || "VM")} console frame">
+    <img class="console-frame-image" draggable="false" data-console-frame-image src="data:${escapeHtml(frame.mime || "image/jpeg")};base64,${frame.data}" alt="${escapeHtml(session.vm_name || "VM")} console frame">
     <div class="console-stream-badge">
       <span></span>
       <strong>Live relay</strong>
@@ -639,7 +667,7 @@ function startVmConsoleFrameStream(sessionId) {
   if (!sessionId) return;
   if (consoleFrameTimer) window.clearInterval(consoleFrameTimer);
   pollVmConsoleFrame(sessionId);
-  consoleFrameTimer = window.setInterval(() => pollVmConsoleFrame(sessionId), 1000);
+  consoleFrameTimer = window.setInterval(() => pollVmConsoleFrame(sessionId), 650);
 }
 
 async function sendVmConsoleCommand(action, options = {}) {
@@ -658,6 +686,24 @@ async function sendVmConsoleCommand(action, options = {}) {
     headers: { Accept: "application/json", "X-Requested-With": "XMLHttpRequest" },
   });
   return parseJsonResponse(response);
+}
+
+function vmConsoleFramePoint(event, image) {
+  const rect = image.getBoundingClientRect();
+  const frameWidth = activeConsoleFrame?.width || image.naturalWidth || Math.round(rect.width);
+  const frameHeight = activeConsoleFrame?.height || image.naturalHeight || Math.round(rect.height);
+  if (!rect.width || !rect.height || !frameWidth || !frameHeight) return null;
+  return {
+    x: Math.max(0, Math.min(frameWidth - 1, Math.round(((event.clientX - rect.left) / rect.width) * frameWidth))),
+    y: Math.max(0, Math.min(frameHeight - 1, Math.round(((event.clientY - rect.top) / rect.height) * frameHeight))),
+  };
+}
+
+function setVmConsoleStatus(message, type = "") {
+  const status = vmConsoleModal?.querySelector("[data-vm-console-input-status]");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `copy-status ${type}`.trim();
 }
 
 function openVmConsole(vm) {
@@ -684,6 +730,45 @@ function closeVmConsole() {
 document.querySelectorAll("[data-vm-console-close]").forEach((button) => button.addEventListener("click", closeVmConsole));
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeVmConsole();
+});
+
+document.addEventListener("click", async (event) => {
+  const image = event.target.closest?.("[data-console-frame-image]");
+  if (!image || !activeConsoleVm) return;
+  const point = vmConsoleFramePoint(event, image);
+  if (!point) return;
+  setVmConsoleStatus("Sending click to VM...");
+  try {
+    const data = await sendVmConsoleCommand("console.mouse", {
+      x: point.x,
+      y: point.y,
+      button: "left",
+      mouse_action: "click",
+    });
+    setVmConsoleStatus(data?.success ? "Click sent to VM." : (data?.message || "Mouse input failed."), data?.success ? "good" : "bad");
+  } catch {
+    setVmConsoleStatus("Mouse input could not be sent.", "bad");
+  }
+});
+
+document.addEventListener("contextmenu", async (event) => {
+  const image = event.target.closest?.("[data-console-frame-image]");
+  if (!image || !activeConsoleVm) return;
+  event.preventDefault();
+  const point = vmConsoleFramePoint(event, image);
+  if (!point) return;
+  setVmConsoleStatus("Sending right click to VM...");
+  try {
+    const data = await sendVmConsoleCommand("console.mouse", {
+      x: point.x,
+      y: point.y,
+      button: "right",
+      mouse_action: "click",
+    });
+    setVmConsoleStatus(data?.success ? "Right click sent to VM." : (data?.message || "Mouse input failed."), data?.success ? "good" : "bad");
+  } catch {
+    setVmConsoleStatus("Mouse input could not be sent.", "bad");
+  }
 });
 
 document.addEventListener("click", async (event) => {
@@ -717,11 +802,30 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-document.addEventListener("keydown", (event) => {
+document.addEventListener("keydown", async (event) => {
   const input = event.target.closest?.("[data-vm-console-text]");
   if (!input || event.key !== "Enter") return;
   event.preventDefault();
-  vmConsoleModal?.querySelector("[data-vm-console-send-text]")?.click();
+  const sendButton = vmConsoleModal?.querySelector("[data-vm-console-send-text]");
+  const text = input.value || "";
+  if (sendButton) sendButton.disabled = true;
+  setVmConsoleStatus("Sending text and Enter to VM...");
+  try {
+    if (text) {
+      const textResult = await sendVmConsoleCommand("console.type_text", { text });
+      if (!textResult?.success) {
+        setVmConsoleStatus(textResult?.message || "Console text failed.", "bad");
+        return;
+      }
+      input.value = "";
+    }
+    const enterResult = await sendVmConsoleCommand("console.key", { key_code: 13, key_name: "Enter" });
+    setVmConsoleStatus(enterResult?.success ? "Enter sent to VM." : (enterResult?.message || "Enter key failed."), enterResult?.success ? "good" : "bad");
+  } catch {
+    setVmConsoleStatus("Console input could not be sent.", "bad");
+  } finally {
+    if (sendButton) sendButton.disabled = false;
+  }
 });
 
 async function copyTextToClipboard(text) {
@@ -828,7 +932,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7810ced09f7ee20a6a609074f42c155484ff5f66/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/936c32ff0892b8f934c9c7995bddd59864606939/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1071,7 +1175,7 @@ function manualAgentUpdateCommand() {
   const workspaceCode = String(account.workspace_code || "your_workspace_code").replace(/"/g, '\\"');
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7810ced09f7ee20a6a609074f42c155484ff5f66/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/936c32ff0892b8f934c9c7995bddd59864606939/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
@@ -1547,6 +1651,7 @@ async function loadSupportTickets() {
 }
 
 function renderHostRequests(data) {
+  latestHostSnapshot = data;
   const hosts = Array.isArray(data.hosts) ? data.hosts : [];
   latestAgentVersion = data.latest_agent_version || latestAgentVersion;
   const list = document.querySelector("[data-host-requests-list]");
@@ -1643,6 +1748,9 @@ function renderHostRequests(data) {
   });
   renderInventoryViews(hosts);
   renderRecentCommandStatus(data.commands || []);
+  if (hostDataHasLiveActivity(data)) {
+    startLiveRefreshBurst(12000);
+  }
   if (popup) {
     popup.hidden = pending.length === 0;
     if (popupText && pending.length) {

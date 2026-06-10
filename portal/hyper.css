@@ -1542,6 +1542,8 @@
   min-height: 340px;
   object-fit: contain;
   background: #02060b;
+  cursor: crosshair;
+  user-select: none;
 }
 .console-stream-badge {
   position: absolute;
