@@ -447,6 +447,8 @@ let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
 let latestAgentVersion = "0.12.0";
+let activeAgentUpdate = null;
+let agentUpdateProgressTimer = null;
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
@@ -1183,6 +1185,160 @@ function manualAgentUpdateCommand() {
   ].join("\n");
 }
 
+function agentUpdateModal() {
+  return document.querySelector("[data-agent-update-modal]");
+}
+
+function setAgentUpdateStep(activeStep, failed = false) {
+  const modal = agentUpdateModal();
+  const order = ["queued", "download", "restart", "verify"];
+  const activeIndex = order.indexOf(activeStep);
+  modal?.querySelectorAll("[data-agent-update-step]").forEach((step) => {
+    const index = order.indexOf(step.dataset.agentUpdateStep || "");
+    step.classList.toggle("done", !failed && activeIndex > index);
+    step.classList.toggle("active", !failed && activeIndex === index);
+    step.classList.toggle("bad", failed && activeIndex === index);
+  });
+}
+
+function setAgentUpdateProgress(percent, message, step = "queued", state = "active") {
+  const modal = agentUpdateModal();
+  if (!modal) return;
+  const panel = modal.querySelector(".agent-update-panel");
+  const progress = modal.querySelector("[data-agent-update-progress]");
+  const label = modal.querySelector("[data-agent-update-progress-label]");
+  const messageEl = modal.querySelector("[data-agent-update-message]");
+  const safePercent = clampPercent(percent);
+  if (progress) progress.style.width = `${safePercent}%`;
+  if (label) label.textContent = `${safePercent}%`;
+  if (messageEl && message) messageEl.textContent = message;
+  panel?.classList.toggle("is-complete", state === "complete");
+  panel?.classList.toggle("is-failed", state === "failed");
+  setAgentUpdateStep(step, state === "failed");
+}
+
+function openAgentUpdateModal(hostId, hostName, targetVersion = latestAgentVersion) {
+  const modal = agentUpdateModal();
+  if (!modal) return;
+  modal.classList.add("is-open");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  modal.querySelector("[data-agent-update-host]").textContent = hostName || "Hyper-V Host";
+  modal.querySelector("[data-agent-update-version]").textContent = `Updating to Hyper Agent ${targetVersion}`;
+  modal.querySelector("[data-agent-update-title]").textContent = "Updating Hyper Agent";
+  const fallback = modal.querySelector("[data-agent-update-fallback]");
+  const fallbackCommand = modal.querySelector("[data-agent-update-fallback-command]");
+  const done = modal.querySelector("[data-agent-update-done]");
+  if (fallback) fallback.hidden = true;
+  if (fallbackCommand) fallbackCommand.textContent = manualAgentUpdateCommand();
+  if (done) done.hidden = true;
+  activeAgentUpdate = {
+    hostId,
+    hostName,
+    targetVersion,
+    startedAt: Date.now(),
+    timeoutAt: Date.now() + 135000,
+    progress: 4,
+    state: "queued",
+  };
+  setAgentUpdateProgress(4, "Opening the live command channel to the host agent.", "queued");
+  if (agentUpdateProgressTimer) window.clearInterval(agentUpdateProgressTimer);
+  agentUpdateProgressTimer = window.setInterval(() => {
+    if (!activeAgentUpdate || activeAgentUpdate.state === "complete" || activeAgentUpdate.state === "failed") return;
+    const elapsed = Date.now() - activeAgentUpdate.startedAt;
+    let target = 18;
+    let step = "queued";
+    let message = "Waiting for the host agent to accept the update.";
+    if (elapsed > 8000) {
+      target = 44;
+      step = "download";
+      message = `Downloading Hyper Agent ${activeAgentUpdate.targetVersion} from GitHub.`;
+    }
+    if (elapsed > 26000) {
+      target = 72;
+      step = "restart";
+      message = "Restarting the background agent tasks and reconnecting the live channel.";
+    }
+    if (elapsed > 52000) {
+      target = 92;
+      step = "verify";
+      message = "Verifying the host reported the new agent version.";
+    }
+    activeAgentUpdate.progress = Math.max(activeAgentUpdate.progress, Math.min(target, activeAgentUpdate.progress + 1));
+    setAgentUpdateProgress(activeAgentUpdate.progress, message, step);
+    if (Date.now() > activeAgentUpdate.timeoutAt) {
+      failAgentUpdate("The host did not report the new version before the update window expired. Use the manual fallback below to force the update locally.");
+    }
+  }, 900);
+}
+
+function closeAgentUpdateModal() {
+  const modal = agentUpdateModal();
+  if (!modal) return;
+  modal.classList.remove("is-open");
+  modal.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+}
+
+function completeAgentUpdate(host) {
+  if (!activeAgentUpdate || activeAgentUpdate.state === "complete") return;
+  activeAgentUpdate.state = "complete";
+  activeAgentUpdate.progress = 100;
+  setAgentUpdateProgress(100, `${host?.computer_name || activeAgentUpdate.hostName || "Host"} is now running Hyper Agent ${agentVersionForHost(host) || activeAgentUpdate.targetVersion}.`, "verify", "complete");
+  const modal = agentUpdateModal();
+  const title = modal?.querySelector("[data-agent-update-title]");
+  const done = modal?.querySelector("[data-agent-update-done]");
+  if (title) title.textContent = "Agent update complete";
+  if (done) done.hidden = false;
+  if (agentUpdateProgressTimer) {
+    window.clearInterval(agentUpdateProgressTimer);
+    agentUpdateProgressTimer = null;
+  }
+}
+
+function failAgentUpdate(message) {
+  if (!activeAgentUpdate || activeAgentUpdate.state === "failed") return;
+  activeAgentUpdate.state = "failed";
+  setAgentUpdateProgress(Math.max(activeAgentUpdate.progress || 0, 96), message || "Automatic update could not be verified.", "verify", "failed");
+  const modal = agentUpdateModal();
+  const title = modal?.querySelector("[data-agent-update-title]");
+  const fallback = modal?.querySelector("[data-agent-update-fallback]");
+  const fallbackCommand = modal?.querySelector("[data-agent-update-fallback-command]");
+  if (title) title.textContent = "Manual update needed";
+  if (fallbackCommand) fallbackCommand.textContent = manualAgentUpdateCommand();
+  if (fallback) fallback.hidden = false;
+  if (agentUpdateProgressTimer) {
+    window.clearInterval(agentUpdateProgressTimer);
+    agentUpdateProgressTimer = null;
+  }
+}
+
+function updateAgentUpdateFromHostData(data) {
+  if (!activeAgentUpdate || activeAgentUpdate.state === "complete" || activeAgentUpdate.state === "failed") return;
+  const hosts = Array.isArray(data?.hosts) ? data.hosts : [];
+  const host = hosts.find((item) => String(item.id || "") === String(activeAgentUpdate.hostId || ""));
+  if (host) {
+    const installed = agentVersionForHost(host);
+    if (installed && compareVersions(installed, activeAgentUpdate.targetVersion) >= 0 && !agentUpdateAvailable(host)) {
+      completeAgentUpdate(host);
+      return;
+    }
+    const online = String(host.agent_status || "").toLowerCase() === "online";
+    if (!online) {
+      setAgentUpdateProgress(Math.max(activeAgentUpdate.progress || 0, 68), "The agent is restarting. VisorCore is waiting for the live channel to reconnect.", "restart");
+    }
+  }
+  const commands = Array.isArray(data?.commands) ? data.commands : [];
+  const failedUpdate = commands.find((command) => (
+    String(command.action || "") === "agent.update"
+    && String(command.host_id || "") === String(activeAgentUpdate.hostId || "")
+    && String(command.status || "").toLowerCase() === "failed"
+  ));
+  if (failedUpdate) {
+    failAgentUpdate(failedUpdate.message || "The host reported that the automatic update failed.");
+  }
+}
+
 function clampPercent(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number)) return 0;
@@ -1666,7 +1822,6 @@ function renderHostRequests(data) {
   const approved = hosts.filter((host) => (host.status || "") === "approved");
   const removing = hosts.filter((host) => ["deletion_requested", "delete_command_sent"].includes(host.status || ""));
   const updateHosts = approved.filter((host) => agentUpdateAvailable(host));
-  const manualUpdateRequired = updateHosts.length > 0;
   connectedHostsCount = approved.length;
   if (count) {
     count.textContent = `${pending.length} pending`;
@@ -1705,7 +1860,7 @@ function renderHostRequests(data) {
   const manualPanel = document.querySelector("[data-manual-agent-update]");
   const manualCommand = document.querySelector("[data-manual-agent-update-command]");
   if (manualCommand) manualCommand.textContent = manualAgentUpdateCommand();
-  if (manualPanel) manualPanel.hidden = updateHosts.length === 0 || !manualUpdateRequired;
+  if (manualPanel) manualPanel.hidden = true;
   if (connectedList) {
     connectedList.innerHTML = "";
     approved.concat(removing).forEach((host) => {
@@ -1748,6 +1903,7 @@ function renderHostRequests(data) {
   });
   renderInventoryViews(hosts);
   renderRecentCommandStatus(data.commands || []);
+  updateAgentUpdateFromHostData(data);
   if (hostDataHasLiveActivity(data)) {
     startLiveRefreshBurst(12000);
   }
@@ -2120,14 +2276,20 @@ document.addEventListener("click", (event) => {
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-queue-command]");
   if (!button) return;
+  const queuedAction = button.dataset.queueCommand || "";
   const options = await commandOptionsForButton(button);
   if (options === null) return;
   button.disabled = true;
-  setCommandStatus("active", "Sending action", `${button.textContent.trim() || "Command"} is being handed to the host agent.`);
+  if (queuedAction === "agent.update") {
+    openAgentUpdateModal(button.dataset.hostId || "", button.dataset.targetName || "Hyper-V Host", latestAgentVersion);
+    setCommandStatus("active", "Agent update starting", `${button.dataset.targetName || "Host"} is being prepared for Hyper Agent ${latestAgentVersion}.`);
+  } else {
+    setCommandStatus("active", "Sending action", `${button.textContent.trim() || "Command"} is being handed to the host agent.`);
+  }
   try {
     const body = new FormData();
     body.set("host_id", button.dataset.hostId || "");
-    body.set("command", button.dataset.queueCommand || "");
+    body.set("command", queuedAction);
     body.set("target_type", button.dataset.targetType || "");
     body.set("target_name", button.dataset.targetName || "");
     body.set("target_id", button.dataset.targetId || "");
@@ -2141,28 +2303,22 @@ document.addEventListener("click", async (event) => {
     const data = await parseJsonResponse(response);
     if (!data.success) {
       setCommandStatus("bad", "Action blocked", data.message || "Command could not be sent.");
-      if ((button.dataset.queueCommand || "") === "agent.update") {
-        document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
-      }
+      if (queuedAction === "agent.update") failAgentUpdate(data.message || "The portal could not queue the agent update.");
       return;
     }
     renderRecentCommandStatus(data.commands || []);
-    if ((button.dataset.queueCommand || "") === "agent.update") {
-      document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
+    if (queuedAction === "agent.update") {
       setCommandStatus("active", "Agent update queued", "The host is downloading the latest agent, staging the update, and restarting the background task. The version should change after the next check-in.");
-      window.setTimeout(() => loadHostRequests(), 6000);
-      window.setTimeout(() => loadHostRequests(), 18000);
-      window.setTimeout(() => loadHostRequests(), 45000);
+      setAgentUpdateProgress(Math.max(activeAgentUpdate?.progress || 0, 18), "Update command accepted. The host agent is downloading the latest build.", "download");
+      startLiveRefreshBurst(140000);
     } else {
       setCommandStatus("good", "Action sent", data.message || "The host agent is picking this up now.");
+      startLiveRefreshBurst();
     }
-    startLiveRefreshBurst();
   } catch (error) {
     console.error("VisorCore command queue failed", error);
     setCommandStatus("bad", "Action failed", "Command could not be sent from this browser session.");
-    if ((button.dataset.queueCommand || "") === "agent.update") {
-      document.querySelector("[data-manual-agent-update]")?.removeAttribute("hidden");
-    }
+    if (queuedAction === "agent.update") failAgentUpdate("The browser could not queue the automatic update. Use the manual fallback below.");
   } finally {
     button.disabled = false;
     updateVmToolbarState();
@@ -2175,11 +2331,41 @@ document.addEventListener("click", async (event) => {
     const buttons = Array.from(document.querySelectorAll("[data-agent-update-button]")).filter((button) => !button.disabled);
     if (!buttons.length) return;
     updateAll.disabled = true;
-    for (const button of buttons) {
-      button.click();
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    buttons[0].click();
+    if (buttons.length > 1) {
+      setCommandStatus("active", "Agent update started", `Updating ${buttons[0].dataset.targetName || "the first host"}. Remaining hosts will still show Update Agent after this completes.`);
     }
     updateAll.disabled = false;
+    return;
+  }
+  const updateClose = event.target.closest("[data-agent-update-close]");
+  if (updateClose) {
+    closeAgentUpdateModal();
+    return;
+  }
+  const updateDone = event.target.closest("[data-agent-update-done]");
+  if (updateDone) {
+    closeAgentUpdateModal();
+    activeAgentUpdate = null;
+    await loadHostRequests();
+    activatePortalView(document.querySelector(".portal-shell"), "hosts");
+    return;
+  }
+  const copyFallback = event.target.closest("[data-copy-agent-update-fallback]");
+  if (copyFallback) {
+    const status = document.querySelector("[data-agent-update-fallback-status]");
+    try {
+      await copyTextToClipboard(manualAgentUpdateCommand());
+      if (status) {
+        status.textContent = "Manual update command copied.";
+        status.className = "copy-status good";
+      }
+    } catch {
+      if (status) {
+        status.textContent = "Copy failed. Select the command manually.";
+        status.className = "copy-status bad";
+      }
+    }
     return;
   }
   const copyManual = event.target.closest("[data-copy-manual-agent-update]");
