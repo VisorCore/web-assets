@@ -444,7 +444,7 @@ let liveRefreshBurstTimer = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.10.0";
+let latestAgentVersion = "0.11.0";
 let latestTickets = [];
 let selectedTicketId = "";
 let latestStaffTickets = [];
@@ -828,7 +828,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/4cadabddabbb9aa00a34cb5ce7d2bda245a3a59b/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7810ced09f7ee20a6a609074f42c155484ff5f66/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1071,7 +1071,7 @@ function manualAgentUpdateCommand() {
   const workspaceCode = String(account.workspace_code || "your_workspace_code").replace(/"/g, '\\"');
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/4cadabddabbb9aa00a34cb5ce7d2bda245a3a59b/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/7810ced09f7ee20a6a609074f42c155484ff5f66/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
