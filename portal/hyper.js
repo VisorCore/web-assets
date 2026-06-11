@@ -446,7 +446,7 @@ let latestHostSnapshot = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.12.0";
+let latestAgentVersion = "0.13.0";
 let activeAgentUpdate = null;
 let agentUpdateProgressTimer = null;
 let latestTickets = [];
@@ -460,6 +460,7 @@ let activeConsoleHasFrame = false;
 let activeConsolePeer = null;
 let activeConsoleSignalSocket = null;
 let activeConsoleDataChannel = null;
+let activeConsoleObjectUrl = "";
 let consoleFrameTimer = null;
 let consoleFramePollCount = 0;
 
@@ -594,7 +595,7 @@ async function requestVmConsoleSession(vm) {
     activeConsoleSessionId = data.session_id || "";
     if (data.transport === "webrtc_cloudflare" && data.signaling?.url) {
       activeConsoleSessionId = data.session_id || "";
-      startVmConsoleWebRtc(data);
+      startVmConsoleCloudflareRelay(data);
       return;
     }
     renderVmConsoleState("ready", "Console session starting", data.message || "Waiting for the first live frame from the host.", data.features || []);
@@ -613,6 +614,9 @@ function stopVmConsoleFrameStream() {
   if (activeConsolePeer) {
     try { activeConsolePeer.close(); } catch {}
   }
+  if (activeConsoleObjectUrl) {
+    try { URL.revokeObjectURL(activeConsoleObjectUrl); } catch {}
+  }
   consoleFrameTimer = null;
   consoleFramePollCount = 0;
   activeConsoleSessionId = "";
@@ -622,6 +626,7 @@ function stopVmConsoleFrameStream() {
   activeConsolePeer = null;
   activeConsoleSignalSocket = null;
   activeConsoleDataChannel = null;
+  activeConsoleObjectUrl = "";
 }
 
 function renderVmConsoleVideoStream(stream) {
@@ -717,6 +722,102 @@ async function startVmConsoleWebRtc(data) {
   });
 }
 
+async function startVmConsoleCloudflareRelay(data) {
+  const signaling = data.signaling || {};
+  const url = signaling.url || "";
+  if (!url) {
+    renderVmConsoleState("error", "Cloudflare relay unavailable", "The console session did not include a signed Cloudflare relay URL.");
+    return;
+  }
+  if (!("WebSocket" in window)) {
+    renderVmConsoleState("error", "Browser unsupported", "This browser cannot open the Cloudflare console relay.");
+    return;
+  }
+  renderVmConsoleState("loading", "Opening low-latency console", "Connecting the browser to the Hyper Agent through the VisorCore Cloudflare relay.", data.features || []);
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  activeConsoleSignalSocket = socket;
+  socket.addEventListener("open", () => {
+    sendConsoleSignal({ type: "browser.hello", transport: "cloudflare_ws" });
+    setVmConsoleStatus("Low-latency relay connected. Waiting for the first frame...", "good");
+  });
+  socket.addEventListener("message", async (event) => {
+    if (typeof event.data === "string") {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (message.type === "agent.ready" || message.type === "agent.hello") {
+        setVmConsoleStatus("Hyper Agent connected to console relay.", "good");
+      } else if (message.type === "agent.closed") {
+        setVmConsoleStatus("Hyper Agent console relay disconnected.", "bad");
+      } else if (message.type === "console.input.ack") {
+        setVmConsoleStatus(message.message || "Console input delivered.", "good");
+      } else if (message.type === "console.input.error") {
+        setVmConsoleStatus(message.message || "Console input failed.", "bad");
+      } else if (message.type === "error") {
+        setVmConsoleStatus(message.message || "Console relay error.", "bad");
+      }
+      return;
+    }
+    await renderVmConsoleBinaryFrame(event.data);
+  });
+  socket.addEventListener("close", () => {
+    if (!activeConsoleHasFrame) {
+      renderVmConsoleState("loading", "Console relay reconnecting", "The browser is waiting for the Hyper Agent to reconnect to the Cloudflare relay.");
+    }
+    setVmConsoleStatus("Console relay disconnected.", "bad");
+  });
+  socket.addEventListener("error", () => {
+    renderVmConsoleState("error", "Cloudflare relay failed", "The browser could not connect to the VisorCore Cloudflare console Worker.");
+  });
+}
+
+async function renderVmConsoleBinaryFrame(data) {
+  const buffer = data instanceof ArrayBuffer ? data : await data.arrayBuffer();
+  if (!buffer || buffer.byteLength < 5) return;
+  const view = new DataView(buffer);
+  const headerLength = view.getUint32(0, false);
+  if (headerLength <= 0 || headerLength > buffer.byteLength - 4) return;
+  const headerBytes = new Uint8Array(buffer, 4, headerLength);
+  let header = {};
+  try {
+    header = JSON.parse(new TextDecoder().decode(headerBytes));
+  } catch {
+    return;
+  }
+  if (header.type && header.type !== "console.frame") return;
+  const frameBytes = buffer.slice(4 + headerLength);
+  if (!frameBytes.byteLength) return;
+  const nextUrl = URL.createObjectURL(new Blob([frameBytes], { type: header.mime || "image/jpeg" }));
+  const previousUrl = activeConsoleObjectUrl;
+  activeConsoleObjectUrl = nextUrl;
+  activeConsoleHasFrame = true;
+  activeConsoleFrame = {
+    width: Number(header.width || 0),
+    height: Number(header.height || 0),
+    capturedAt: header.capturedAtUtc || header.captured_at || "",
+  };
+  const screen = vmConsoleModal?.querySelector("[data-vm-console-screen]");
+  if (!screen) return;
+  screen.className = "console-screen is-streaming";
+  screen.innerHTML = `
+    <img class="console-frame-image" draggable="false" data-console-frame-image src="${nextUrl}" alt="${escapeHtml(activeConsoleVm?.name || "VM")} console frame">
+    <div class="console-stream-badge">
+      <span></span>
+      <strong>Cloudflare live</strong>
+      <small>${escapeHtml(activeConsoleFrame.capturedAt ? new Date(activeConsoleFrame.capturedAt).toLocaleTimeString() : "streaming")}</small>
+    </div>
+  `;
+  if (previousUrl) {
+    window.setTimeout(() => {
+      try { URL.revokeObjectURL(previousUrl); } catch {}
+    }, 1000);
+  }
+}
+
 function renderVmConsoleFrame(session) {
   const screen = vmConsoleModal?.querySelector("[data-vm-console-screen]");
   if (!screen || !session) return;
@@ -792,6 +893,10 @@ async function sendVmConsoleCommand(action, options = {}) {
   if (activeConsoleDataChannel?.readyState === "open" && realtimeMap[action]) {
     activeConsoleDataChannel.send(JSON.stringify(realtimeMap[action]));
     return { success: true, message: "Sent over the live WebRTC console channel." };
+  }
+  if (activeConsoleSignalSocket?.readyState === WebSocket.OPEN && realtimeMap[action]) {
+    sendConsoleSignal(realtimeMap[action]);
+    return { success: true, message: "Sent over the live Cloudflare console relay." };
   }
   if (!activeConsoleVm) return;
   const body = new FormData();
@@ -1054,7 +1159,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/936c32ff0892b8f934c9c7995bddd59864606939/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/adc6b1a7ff30812d6fa15f7bae0a5ab235beadb4/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1297,7 +1402,7 @@ function manualAgentUpdateCommand() {
   const workspaceCode = String(account.workspace_code || "your_workspace_code").replace(/"/g, '\\"');
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/936c32ff0892b8f934c9c7995bddd59864606939/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/adc6b1a7ff30812d6fa15f7bae0a5ab235beadb4/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
