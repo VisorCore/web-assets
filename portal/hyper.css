@@ -1671,6 +1671,15 @@
   cursor: crosshair;
   user-select: none;
 }
+.console-webrtc-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  object-fit: contain;
+  background: #02060b;
+  cursor: crosshair;
+}
 .console-stream-badge {
   position: absolute;
   right: 14px;

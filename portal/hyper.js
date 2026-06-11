@@ -457,6 +457,9 @@ let activeConsoleSessionId = "";
 let activeConsoleVm = null;
 let activeConsoleFrame = null;
 let activeConsoleHasFrame = false;
+let activeConsolePeer = null;
+let activeConsoleSignalSocket = null;
+let activeConsoleDataChannel = null;
 let consoleFrameTimer = null;
 let consoleFramePollCount = 0;
 
@@ -589,6 +592,11 @@ async function requestVmConsoleSession(vm) {
       return;
     }
     activeConsoleSessionId = data.session_id || "";
+    if (data.transport === "webrtc_cloudflare" && data.signaling?.url) {
+      activeConsoleSessionId = data.session_id || "";
+      startVmConsoleWebRtc(data);
+      return;
+    }
     renderVmConsoleState("ready", "Console session starting", data.message || "Waiting for the first live frame from the host.", data.features || []);
     startVmConsoleFrameStream(activeConsoleSessionId);
   } catch (error) {
@@ -599,12 +607,114 @@ async function requestVmConsoleSession(vm) {
 
 function stopVmConsoleFrameStream() {
   if (consoleFrameTimer) window.clearInterval(consoleFrameTimer);
+  if (activeConsoleSignalSocket) {
+    try { activeConsoleSignalSocket.close(); } catch {}
+  }
+  if (activeConsolePeer) {
+    try { activeConsolePeer.close(); } catch {}
+  }
   consoleFrameTimer = null;
   consoleFramePollCount = 0;
   activeConsoleSessionId = "";
   activeConsoleVm = null;
   activeConsoleFrame = null;
   activeConsoleHasFrame = false;
+  activeConsolePeer = null;
+  activeConsoleSignalSocket = null;
+  activeConsoleDataChannel = null;
+}
+
+function renderVmConsoleVideoStream(stream) {
+  const screen = vmConsoleModal?.querySelector("[data-vm-console-screen]");
+  if (!screen) return;
+  screen.className = "console-screen is-streaming";
+  screen.innerHTML = `
+    <video class="console-webrtc-video" data-console-webrtc-video autoplay playsinline></video>
+    <div class="console-stream-badge">
+      <span></span>
+      <strong>WebRTC live</strong>
+      <small>direct agent stream</small>
+    </div>
+  `;
+  const video = screen.querySelector("[data-console-webrtc-video]");
+  if (video) video.srcObject = stream;
+}
+
+function sendConsoleSignal(payload) {
+  if (!activeConsoleSignalSocket || activeConsoleSignalSocket.readyState !== WebSocket.OPEN) return false;
+  activeConsoleSignalSocket.send(JSON.stringify(payload));
+  return true;
+}
+
+async function startVmConsoleWebRtc(data) {
+  const signaling = data.signaling || {};
+  const url = signaling.url || "";
+  if (!url) {
+    renderVmConsoleState("error", "WebRTC signaling unavailable", "The console session did not include a Cloudflare signaling URL.");
+    return;
+  }
+  if (!("RTCPeerConnection" in window) || !("WebSocket" in window)) {
+    renderVmConsoleState("error", "Browser unsupported", "This browser cannot open the WebRTC console transport.");
+    return;
+  }
+  renderVmConsoleState("loading", "Opening WebRTC console", "Connecting the browser to the Hyper Agent through Cloudflare signaling. Media will stream direct when NAT allows it.", data.features || []);
+  const peer = new RTCPeerConnection({ iceServers: signaling.ice_servers || [] });
+  activeConsolePeer = peer;
+  peer.addTransceiver("video", { direction: "recvonly" });
+  const inputChannel = peer.createDataChannel("visorcore-console-input", { ordered: true });
+  activeConsoleDataChannel = inputChannel;
+  inputChannel.addEventListener("open", () => setVmConsoleStatus("Low-latency input channel connected.", "good"));
+  inputChannel.addEventListener("close", () => setVmConsoleStatus("Input channel disconnected.", "bad"));
+  peer.addEventListener("track", (event) => {
+    const stream = event.streams?.[0] || new MediaStream([event.track]);
+    activeConsoleHasFrame = true;
+    renderVmConsoleVideoStream(stream);
+  });
+  peer.addEventListener("icecandidate", (event) => {
+    if (event.candidate) sendConsoleSignal({ type: "webrtc.ice", candidate: event.candidate });
+  });
+  peer.addEventListener("connectionstatechange", () => {
+    const state = peer.connectionState;
+    if (state === "connected") setVmConsoleStatus("WebRTC console connected.", "good");
+    if (state === "failed" || state === "disconnected") setVmConsoleStatus("WebRTC console is reconnecting or needs TURN fallback.", "bad");
+  });
+
+  const socket = new WebSocket(url);
+  activeConsoleSignalSocket = socket;
+  socket.addEventListener("open", async () => {
+    sendConsoleSignal({ type: "browser.hello" });
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    sendConsoleSignal({ type: "webrtc.offer", sdp: offer.sdp });
+  });
+  socket.addEventListener("message", async (event) => {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (message.type === "webrtc.answer" && message.sdp) {
+      await peer.setRemoteDescription({ type: "answer", sdp: message.sdp });
+      return;
+    }
+    if (message.type === "webrtc.offer" && message.sdp) {
+      await peer.setRemoteDescription({ type: "offer", sdp: message.sdp });
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      sendConsoleSignal({ type: "webrtc.answer", sdp: answer.sdp });
+      return;
+    }
+    if (message.type === "webrtc.ice" && message.candidate) {
+      try { await peer.addIceCandidate(message.candidate); } catch {}
+    }
+  });
+  socket.addEventListener("close", () => {
+    if (!activeConsoleHasFrame) renderVmConsoleState("loading", "Cloudflare signaling closed", "The browser is waiting for the Hyper Agent to reconnect to the signaling room.");
+  });
+  socket.addEventListener("error", () => {
+    renderVmConsoleState("error", "Cloudflare signaling failed", "The browser could not connect to the VisorCore Cloudflare signaling Worker.");
+  });
 }
 
 function renderVmConsoleFrame(session) {
@@ -673,6 +783,16 @@ function startVmConsoleFrameStream(sessionId) {
 }
 
 async function sendVmConsoleCommand(action, options = {}) {
+  const realtimeMap = {
+    "console.type_text": { type: "console.input.text", text: options.text || "" },
+    "console.key": { type: "console.input.key", key: options.key_name || "", keyCode: Number(options.key_code || 0) },
+    "console.mouse": { type: "console.input.mouse", x: Number(options.x || 0), y: Number(options.y || 0), button: options.button || "left", action: options.mouse_action || "click" },
+    "console.ctrl_alt_del": { type: "console.input.key", key: "CtrlAltDel", keyCode: 0, chord: ["Control", "Alt", "Delete"] },
+  };
+  if (activeConsoleDataChannel?.readyState === "open" && realtimeMap[action]) {
+    activeConsoleDataChannel.send(JSON.stringify(realtimeMap[action]));
+    return { success: true, message: "Sent over the live WebRTC console channel." };
+  }
   if (!activeConsoleVm) return;
   const body = new FormData();
   body.set("host_id", activeConsoleVm.host_id || "");
