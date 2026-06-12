@@ -446,7 +446,7 @@ let latestHostSnapshot = null;
 let connectedHostsCount = 0;
 let selectedVmKey = "";
 let latestVmInventory = [];
-let latestAgentVersion = "0.13.0";
+let latestAgentVersion = "0.13.1";
 let activeAgentUpdate = null;
 let agentUpdateProgressTimer = null;
 let latestTickets = [];
@@ -757,6 +757,8 @@ async function startVmConsoleCloudflareRelay(data) {
         setVmConsoleStatus(message.message || "Console input delivered.", "good");
       } else if (message.type === "console.input.error") {
         setVmConsoleStatus(message.message || "Console input failed.", "bad");
+      } else if (message.type === "console.frame.error") {
+        renderVmConsoleState("error", "Console capture failed", message.message || "The Hyper Agent connected, but Hyper-V did not return a console frame for this VM.");
       } else if (message.type === "error") {
         setVmConsoleStatus(message.message || "Console relay error.", "bad");
       }
@@ -1159,7 +1161,7 @@ function renderAccountUi(account) {
   if (installCommand) {
     installCommand.textContent = [
       "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/adc6b1a7ff30812d6fa15f7bae0a5ab235beadb4/install.ps1" -UseBasicParsing).Content',
+      '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/18d0f8a2634a7706d0aa8d6a0f588a4eddd3be95/install.ps1" -UseBasicParsing).Content',
       '$trimmed = $installer.TrimStart()',
       'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
       "iex $installer",
@@ -1402,7 +1404,7 @@ function manualAgentUpdateCommand() {
   const workspaceCode = String(account.workspace_code || "your_workspace_code").replace(/"/g, '\\"');
   return [
     "Set-ExecutionPolicy RemoteSigned -Scope Process -Force",
-    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/adc6b1a7ff30812d6fa15f7bae0a5ab235beadb4/install.ps1" -UseBasicParsing).Content',
+    '$installer = (iwr "https://raw.githubusercontent.com/VisorCore/hyper-agent/18d0f8a2634a7706d0aa8d6a0f588a4eddd3be95/install.ps1" -UseBasicParsing).Content',
     '$trimmed = $installer.TrimStart()',
     'if ([string]::IsNullOrWhiteSpace($installer) -or $trimmed.StartsWith("<!DOCTYPE", [StringComparison]::OrdinalIgnoreCase) -or $trimmed.StartsWith("<html", [StringComparison]::OrdinalIgnoreCase)) { throw "VisorCore installer download returned HTML instead of PowerShell. Contact support@visorcore.com." }',
     "iex $installer",
@@ -2171,10 +2173,14 @@ async function parseJsonResponse(response) {
   try {
     return JSON.parse(text);
   } catch {
+    const cleanText = text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    const status = response?.status ? `HTTP ${response.status}` : "non-JSON";
     return {
       success: false,
       parse_failed: true,
-      message: text ? "The server returned a non-JSON response after processing the request." : "The server returned an empty response after processing the request.",
+      message: text
+        ? `The server returned ${status} instead of JSON${cleanText ? `: ${cleanText.slice(0, 180)}` : "."}`
+        : `The server returned ${status} with an empty response.`,
     };
   }
 }
